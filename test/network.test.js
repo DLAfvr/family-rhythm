@@ -26,6 +26,17 @@ test('two local devices can pair and synchronize a shared reminder',async()=>{
   }finally{await client.stop();await host.stop();cleanup(dir);}
 });
 
+test('three family devices see one another online through host status',async()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-presence-test-')),hostStore=new Store(path.join(dir,'host.json')),aStore=new Store(path.join(dir,'a.json')),bStore=new Store(path.join(dir,'b.json'));
+  const host=new FamilyNetwork(hostStore,()=>{},0,'0.8.1'),a=new FamilyNetwork(aStore,()=>{},0,'0.8.1'),b=new FamilyNetwork(bStore,()=>{},0,'0.8.0');
+  try{
+    const hs=await host.createFamily('在線測試','主要電腦');a.port=hs.port;b.port=hs.port;
+    await a.join('127.0.0.1',hs.pairingCode,'家長筆電');await b.join('127.0.0.1',hs.pairingCode,'孩子電腦');await a.sync();
+    const peers=a.status().peers,hostId=hostStore.state.network.deviceId,bId=bStore.state.network.deviceId;
+    assert.equal(peers[hostId].online,true);assert.equal(peers[bId].online,true);assert.ok(peers[bId].lastSeen);
+  }finally{await a.stop();await b.stop();await host.stop();cleanup(dir);}
+});
+
 test('pairing code expires and repeated failures are rate limited',async()=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-pair-security-')),hostStore=new Store(path.join(dir,'host.json'));
   const host=new FamilyNetwork(hostStore,()=>{},0,'0.7.0');

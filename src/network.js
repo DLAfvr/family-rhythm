@@ -84,7 +84,7 @@ class FamilyNetwork {
     this.port=this.server.address().port;
     n.online=true; this.timer=setInterval(()=>this.markOffline(),10000); this.onChange();
   }
-  publicPeers(){const n=this.ensure();return [{deviceId:n.deviceId,name:n.deviceName,appVersion:this.appVersion,online:true,role:'primary-manager'},...Object.values(n.peers).map(p=>({deviceId:p.deviceId,name:p.name,appVersion:p.appVersion||'未知',online:Date.now()-new Date(p.lastSeen).getTime()<30000,role:p.role||'member',managementEnabled:Boolean(p.managementEnabled)}))];}
+  publicPeers(){const n=this.ensure();if(n.role==='client')return Object.values(n.peers).map(p=>({...p,online:Boolean(p.online)}));return [{deviceId:n.deviceId,name:n.deviceName,appVersion:this.appVersion,online:true,lastSeen:new Date().toISOString(),role:'primary-manager'},...Object.values(n.peers).map(p=>({deviceId:p.deviceId,name:p.name,appVersion:p.appVersion||'未知',online:Date.now()-new Date(p.lastSeen).getTime()<30000,lastSeen:p.lastSeen,role:p.role||'member',managementEnabled:Boolean(p.managementEnabled)}))];}
   refreshPairingCode(){const n=this.ensure();if(n.role!=='host')throw new Error('只有主要電腦能產生配對碼');n.pairingCode=String(crypto.randomInt(0,1_000_000)).padStart(6,'0');n.pairingExpiresAt=new Date(Date.now()+10*60*1000).toISOString();this.pairFailures.clear();this.store.save();this.onChange();return this.status();}
   applyItemOverrides(items){const overrides=this.ensure().itemOverrides;return items.map(item=>overrides[item.id]?{...item,...overrides[item.id]}:item);}
   assignedItems(deviceId,kind){const n=this.ensure(),all=[...(this.store.state[kind]||[])];for(const [source,items] of Object.entries(n.remoteItems))if(source!==deviceId)all.push(...(items[kind]||[]));return all.filter(x=>x.targetDeviceId===deviceId);}
