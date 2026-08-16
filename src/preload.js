@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld('rhythm', {
   saveUpdateSettings: value => ipcRenderer.invoke('save-update-settings', value),
   checkUpdate: () => ipcRenderer.invoke('check-update'),
   openUpdatePage: () => ipcRenderer.invoke('open-update-page'),
+  downloadUpdate: () => ipcRenderer.invoke('download-update'),
+  installUpdate: () => ipcRenderer.invoke('install-update'),
   exitApp: password => ipcRenderer.invoke('exit-app', password),
   createFamily: value => ipcRenderer.invoke('network-create', value),
   joinFamily: value => ipcRenderer.invoke('network-join', value),
