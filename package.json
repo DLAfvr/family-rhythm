@@ -1,0 +1,43 @@
+{
+  "name": "family-rhythm",
+  "version": "0.7.0",
+  "private": true,
+  "description": "家庭提醒、責任表、時間晶幣與 Windows 使用時間管理工具｜作者：沈晏",
+  "author": "沈晏",
+  "license": "MIT",
+  "repository": "https://github.com/DLAfvr/family-rhythm",
+  "homepage": "https://github.com/DLAfvr/family-rhythm#readme",
+  "bugs": "https://github.com/DLAfvr/family-rhythm/issues",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test",
+    "pack": "electron-builder --win nsis portable"
+  },
+  "devDependencies": {
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
+    "sharp": "^0.35.3"
+  },
+  "build": {
+    "appId": "family.rhythm.desktop",
+    "productName": "家庭節奏",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "src/assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

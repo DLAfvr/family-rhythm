@@ -1,0 +1,31 @@
+:root { color-scheme: dark; font-family: "Microsoft JhengHei UI", "Segoe UI", sans-serif; --ink:#f5f2ff; --muted:#aaa5bd; --panel:#1d1e29; --accent:#8174ee; }
+* { box-sizing: border-box; }
+body { margin:0; color:var(--ink); background:radial-gradient(circle at 20% 0,#29263c,#111219 55%); }
+button,input,select { font:inherit; }
+button { border:0; border-radius:10px; padding:9px 14px; color:white; background:#3b3c4d; cursor:pointer; }
+button.primary { background:linear-gradient(135deg,#8c7cf4,#6456d8); }
+button.danger { background:#713b49; }
+input,select { width:100%; padding:9px 10px; color:white; background:#12131a; border:1px solid #3b3c4b; border-radius:9px; }
+.card { background:rgba(31,32,44,.92); border:1px solid #333446; border-radius:16px; padding:18px; box-shadow:0 14px 40px #0005; }
+.card > h2:first-child { margin-top:0; }
+.card > input, .card > select { margin-bottom:10px; }
+.card > button { margin-top:12px; }
+.card > button + button { margin-left:8px; }
+.form > label:not(.row) { display:flex; flex-direction:column; gap:6px; }
+.form > button { margin-top:4px; }
+.sound-actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.sound-actions button { flex:0 0 auto; }
+.sound-actions .muted { min-width:220px; flex:1; }
+.lock-card { margin-top:24px; padding:12px; border:1px solid #4a465f; border-radius:12px; background:#211f2d; font-size:12px; }
+.lock-card input,.lock-card button { margin-top:8px; width:100%; }
+.page > .card + .card, .page > .grid + .card, .card + h2 { margin-top:18px; }
+.page > .grid { margin-top:14px; }
+.page > .row + .grid { margin-top:14px; }
+.page > p + .grid { margin-top:14px; }
+.card .row + .row { margin-top:10px; }
+.card p:last-child { margin-bottom:0; }
+.muted { color:var(--muted); }
+.row { display:flex; gap:10px; align-items:center; }
+.spread { justify-content:space-between; }
+.pill { padding:4px 9px; border-radius:999px; background:#343549; color:#d9d5ee; font-size:12px; }
+.empty { padding:24px; text-align:center; color:var(--muted); border:1px dashed #3c3d4c; border-radius:12px; }
