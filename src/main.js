@@ -10,6 +10,7 @@ const { FamilyNetwork } = require('./network');
 
 let store, network, widget, dashboard, reminderWindow, rewardWindow, quitDialog, shutdownTimer, shutdownAt, activeReminder, activeRewardPrompt, updateStatus=null, parentUnlockedUntil=0, unlockFailures=[], tray;
 const SENSITIVE_IPC=new Set(['save-reminder','delete-reminder','save-task','delete-task','save-settings','save-update-settings','choose-custom-sound','network-create','network-join','network-leave','network-set-managed','network-refresh-pairing','managed-settings-update','managed-reminder-toggle','managed-usage-reset','network-set-peer-role']);
+const OFFICIAL_UPDATE_REPO='DLAfvr/family-rhythm';
 const fired = new Set();
 let sessionId=Date.now(),sessionActiveSeconds=0,sessionWasIdle=false;
 const singleInstanceLock = app.requestSingleInstanceLock();
@@ -89,8 +90,7 @@ function stateForUi(){const {network:_privateNetwork,soundAssets:_privateSounds,
 function unlockParent(password){const now=Date.now();unlockFailures=unlockFailures.filter(x=>now-x<60000);if(unlockFailures.length>=5)return{ok:false,reason:'嘗試次數過多，請一分鐘後再試'};if(!store.state.settings.parentPassword||core.verifyPassword(String(password||''),store.state.settings.parentPassword)){parentUnlockedUntil=now+5*60*1000;unlockFailures=[];broadcast();return{ok:true,...parentLockStatus()};}unlockFailures.push(now);return{ok:false,reason:'家長密碼不正確'};}
 function versionParts(v){return String(v||'0').replace(/^v/i,'').split('.').map(x=>Number.parseInt(x,10)||0);}
 function newerVersion(a,b){const aa=versionParts(a),bb=versionParts(b);for(let i=0;i<Math.max(aa.length,bb.length);i++){if((aa[i]||0)!==(bb[i]||0))return(aa[i]||0)>(bb[i]||0);}return false;}
-function githubRepo(value){const text=String(value||'').trim(),url=text.match(/^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i),short=text.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);const m=url||short;if(!m)throw new Error('請輸入 GitHub 專案網址，例如 https://github.com/名稱/專案');return`${m[1]}/${m[2]}`;}
-async function checkForUpdates(){try{const repo=githubRepo(store.state.settings.updateRepo),response=await fetch(`https://api.github.com/repos/${repo}/releases/latest`,{headers:{Accept:'application/vnd.github+json','User-Agent':`Family-Rhythm/${app.getVersion()}`}});if(!response.ok)throw new Error(response.status===404?'這個專案還沒有發布 Release':`GitHub 回應 ${response.status}`);const release=await response.json(),latest=String(release.tag_name||release.name||'').replace(/^v/i,'');updateStatus={checkedAt:new Date().toISOString(),available:newerVersion(latest,app.getVersion()),latestVersion:latest,url:release.html_url,error:null};}catch(e){updateStatus={checkedAt:new Date().toISOString(),available:false,latestVersion:null,url:null,error:e.message};}broadcast();return updateStatus;}
+async function checkForUpdates(){try{const response=await fetch(`https://api.github.com/repos/${OFFICIAL_UPDATE_REPO}/releases/latest`,{headers:{Accept:'application/vnd.github+json','User-Agent':`Family-Rhythm/${app.getVersion()}`}});if(!response.ok)throw new Error(response.status===404?'官方倉庫還沒有發布 Release':`GitHub 回應 ${response.status}`);const release=await response.json(),latest=String(release.tag_name||release.name||'').replace(/^v/i,'');updateStatus={checkedAt:new Date().toISOString(),available:newerVersion(latest,app.getVersion()),latestVersion:latest,url:release.html_url,error:null};}catch(e){updateStatus={checkedAt:new Date().toISOString(),available:false,latestVersion:null,url:null,error:e.message};}broadcast();return updateStatus;}
 function showReminder(reminder) {
   activeReminder = reminder;
   if (reminderWindow && !reminderWindow.isDestroyed()) reminderWindow.close();
@@ -174,7 +174,7 @@ if (singleInstanceLock) app.whenReady().then(() => {
   createWidget();
   createTray();
   network.resume().catch(()=>{});
-  setTimeout(()=>{if(store.state.settings.autoCheckUpdates&&store.state.settings.updateRepo)checkForUpdates();},5000);setInterval(()=>{if(store.state.settings.autoCheckUpdates&&store.state.settings.updateRepo)checkForUpdates();},6*60*60*1000);
+  setTimeout(()=>{if(store.state.settings.autoCheckUpdates)checkForUpdates();},5000);setInterval(()=>{if(store.state.settings.autoCheckUpdates)checkForUpdates();},6*60*60*1000);
   setInterval(tick, 1000);
   const originalHandle=ipcMain.handle.bind(ipcMain);ipcMain.handle=(channel,handler)=>originalHandle(channel,(event,...args)=>{if(SENSITIVE_IPC.has(channel)&&!parentLockStatus().unlocked)throw new Error('請先解鎖家長控制');return handler(event,...args);});
   ipcMain.handle('get-state', stateForUi);
@@ -216,7 +216,7 @@ if (singleInstanceLock) app.whenReady().then(() => {
     reminderWindow?.close(); return true;
   });
   ipcMain.handle('cancel-shutdown', (_, password) => cancelShutdown(password));
-  ipcMain.handle('save-update-settings',(_,value={})=>store.update(s=>{s.settings.updateRepo=String(value.updateRepo||'').trim();s.settings.autoCheckUpdates=value.autoCheckUpdates!==false;broadcast();return true;}));
+  ipcMain.handle('save-update-settings',(_,value={})=>store.update(s=>{s.settings.autoCheckUpdates=value.autoCheckUpdates!==false;broadcast();return true;}));
   ipcMain.handle('check-update',()=>checkForUpdates());
   ipcMain.handle('open-update-page',()=>updateStatus?.url?shell.openExternal(updateStatus.url):false);
   ipcMain.handle('respond-reward', (_, value={}) => {if(!activeRewardPrompt)return false;const prompt=activeRewardPrompt,amount=Math.min(prompt.maxMinutes,Math.max(0,Math.floor(Number(value.minutes)||0)));if(value.use&&amount>0)store.update(s=>core.spendReward(s,prompt.kind,amount));else startShutdownCountdown(`reward-${prompt.kind}`);if(rewardWindow&&!rewardWindow.isDestroyed()){rewardWindow.setClosable(true);rewardWindow.close();}broadcast();return true;});

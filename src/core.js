@@ -20,7 +20,6 @@ const DEFAULT_STATE = {
     parentPassword: null,
     shutdownGraceMinutes: 10,
     simulateShutdown: true,
-    updateRepo: '',
     autoCheckUpdates: true
   },
   reminders: [],
