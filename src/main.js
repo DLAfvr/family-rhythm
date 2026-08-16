@@ -30,10 +30,11 @@ if (!singleInstanceLock) {
 
 function createWindow(file, options = {}) {
   const win = new BrowserWindow({
-    backgroundColor: '#12131a', show: false,
+    backgroundColor: '#12131a', show: false, autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
     ...options
   });
+  win.setMenuBarVisibility(false);
   const [name, queryString] = file.split('?');
   const query = Object.fromEntries(new URLSearchParams(queryString || ''));
   win.loadFile(path.join(__dirname, 'ui', name), { query });
