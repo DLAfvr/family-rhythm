@@ -1,13 +1,13 @@
 'use strict';
 function timeText(date) { return date.toLocaleTimeString('zh-TW', { hour:'2-digit', minute:'2-digit' }); }
-function activeDayRules(settings,date=new Date()){const weekend=[0,6].includes(date.getDay()),split=Boolean(settings.dayTypeScheduleEnabled);return{limit:split?Number(weekend?settings.weekendDailyLimitMinutes:settings.weekdayDailyLimitMinutes):Number(settings.dailyLimitMinutes),time:split?(weekend?settings.weekendShutdownTime:settings.weekdayShutdownTime):settings.shutdownTime};}
+function activeDayRules(settings,date=new Date()){const key=date.toLocaleDateString('sv-SE'),vacation=(settings.vacationSchedules||[]).find(x=>x.startDate<=key&&key<=x.endDate);if(vacation)return{limit:Number(vacation.dailyLimitMinutes),time:vacation.shutdownTime,name:vacation.name||'假期'};const weekend=[0,6].includes(date.getDay()),split=Boolean(settings.dayTypeScheduleEnabled);return{limit:split?Number(weekend?settings.weekendDailyLimitMinutes:settings.weekdayDailyLimitMinutes):Number(settings.dailyLimitMinutes),time:split?(weekend?settings.weekendShutdownTime:settings.weekdayShutdownTime):settings.shutdownTime};}
 async function render() {
   const s = await window.rhythm.getState();
   const key = `me:${new Date().toLocaleDateString('sv-SE')}`;
   const used = Math.floor((s.usage[key] || 0) / 60);
   const today = new Date().toLocaleDateString('sv-SE');
   const earned = s.completions.filter(x => x.memberId === 'me' && x.date === today).reduce((a,x)=>a+(x.rewardMinutes||0),0),rewardUse=s.rewardUsage?.[today]||{};
-  const rules=activeDayRules(s.settings),quotaRemaining=Math.max(0,rules.limit+(Number(rewardUse.quotaMinutes)||0)-used); let clockRemaining=null;
+  const rules=activeDayRules(s.settings),quotaRemaining=Math.max(0,rules.limit+(Number(rewardUse.quotaMinutes)||0)-used);document.querySelector('#status').textContent=rules.name||'本機'; let clockRemaining=null;
   if (['clock','both'].includes(s.settings.timeMode) && /^\d{2}:\d{2}$/.test(rules.time || '')) {
     const [h,m]=rules.time.split(':').map(Number), end=new Date(),extension=s.settings.rewardExtendsClock?Math.min(Number(rewardUse.clockMinutes)||0,Number(s.settings.maxRewardClockExtensionMinutes)||0):0; end.setHours(h,m+extension,0,0);clockRemaining=Math.max(0,Math.ceil((end-Date.now())/60000));
   }

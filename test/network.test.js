@@ -85,7 +85,7 @@ test('managed client authorizes host settings and reminder control',async()=>{
     hostStore.state.tasks.push({id:'parent-t1',title:'洗餐具',kind:'daily',shared:true,targetDeviceId:childId});hostStore.save();await client.sync();
     const device=host.managementView()[0];
     assert.equal(device.name,'孩子電腦');assert.equal(device.reminders.length,2);assert.equal(device.tasks.length,1);
-    host.updateManagedSettings(device.deviceId,{timeControlEnabled:false,dailyLimitMinutes:30,earliestStartEnabled:true,earliestStartTime:'07:15',maxRewardClockExtensionMinutes:20});
+    host.updateManagedSettings(device.deviceId,{timeControlEnabled:false,dailyLimitMinutes:30,earliestStartEnabled:true,earliestStartTime:'07:15',maxRewardClockExtensionMinutes:20,vacationSchedules:[{id:'summer',name:'暑假',startDate:'2026-07-01',endDate:'2026-08-29',dailyLimitMinutes:180,shutdownTime:'22:30'}]});
     host.toggleManagedReminder(device.deviceId,'child-r1',false);
     host.toggleManagedReminder(device.deviceId,'parent-r1',false);
     host.requestUsageReset(device.deviceId);
@@ -95,6 +95,7 @@ test('managed client authorizes host settings and reminder control',async()=>{
     assert.equal(clientStore.state.settings.earliestStartEnabled,true);
     assert.equal(clientStore.state.settings.earliestStartTime,'07:15');
     assert.equal(clientStore.state.settings.maxRewardClockExtensionMinutes,20);
+    assert.equal(clientStore.state.settings.vacationSchedules[0].name,'暑假');
     assert.equal(clientStore.state.reminders[0].enabled,false);
     const parentReminder=Object.values(clientStore.state.network.remoteItems).flatMap(x=>x.reminders||[]).find(x=>x.id==='parent-r1');
     assert.equal(parentReminder.enabled,false);

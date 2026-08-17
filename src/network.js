@@ -2,10 +2,11 @@
 const http = require('node:http');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const {normalizeVacationSchedules}=require('./core');
 
 const PORT = 45831;
-const MANAGED_SETTING_KEYS=['timeControlEnabled','earliestStartEnabled','earliestStartTime','timeMode','dailyLimitMinutes','shutdownTime','dayTypeScheduleEnabled','weekdayDailyLimitMinutes','weekendDailyLimitMinutes','weekdayShutdownTime','weekendShutdownTime','rewardExtendsClock','maxRewardClockExtensionMinutes','rewardCapMinutes','shutdownGraceMinutes'];
-function managedSettings(settings={}){return Object.fromEntries(MANAGED_SETTING_KEYS.filter(k=>settings[k]!==undefined).map(k=>[k,settings[k]]));}
+const MANAGED_SETTING_KEYS=['timeControlEnabled','earliestStartEnabled','earliestStartTime','timeMode','dailyLimitMinutes','shutdownTime','dayTypeScheduleEnabled','weekdayDailyLimitMinutes','weekendDailyLimitMinutes','weekdayShutdownTime','weekendShutdownTime','vacationSchedules','rewardExtendsClock','maxRewardClockExtensionMinutes','rewardCapMinutes','shutdownGraceMinutes'];
+function managedSettings(settings={}){return Object.fromEntries(MANAGED_SETTING_KEYS.filter(k=>settings[k]!==undefined).map(k=>[k,k==='vacationSchedules'?normalizeVacationSchedules(settings[k]):settings[k]]));}
 function localDateKey(date=new Date()){return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;}
 function id() { return crypto.randomUUID(); }
 function localAddresses() {

@@ -77,6 +77,17 @@ test('weekday and weekend schedules select separate quota and clock rules', () =
   assert.equal(core.effectiveShutdownAt(s,'me',weekday).getHours(),20);assert.equal(core.effectiveShutdownAt(s,'me',weekend).getHours(),22);
 });
 
+test('vacation date range overrides weekday and weekend rules', () => {
+  const s=core.clone(core.DEFAULT_STATE);Object.assign(s.settings,{dayTypeScheduleEnabled:true,weekdayDailyLimitMinutes:60,weekendDailyLimitMinutes:180,weekdayShutdownTime:'20:00',weekendShutdownTime:'22:30',vacationSchedules:[{id:'summer',name:'暑假',startDate:'2026-07-01',endDate:'2026-08-29',dailyLimitMinutes:240,shutdownTime:'23:00'}]});
+  const during=core.dayTypeSettings(s.settings,new Date('2026-08-17T19:00:00')),after=core.dayTypeSettings(s.settings,new Date('2026-08-31T19:00:00'));
+  assert.equal(during.kind,'vacation');assert.equal(during.name,'暑假');assert.equal(during.dailyLimitMinutes,240);assert.equal(during.shutdownTime,'23:00');assert.equal(after.kind,'weekday');assert.equal(after.dailyLimitMinutes,60);
+});
+
+test('vacation schedules reject malformed or overlapping ranges and clamp quota', () => {
+  const out=core.normalizeVacationSchedules([{name:'錯誤',startDate:'2026-08-30',endDate:'2026-08-01',dailyLimitMinutes:10,shutdownTime:'21:00'},{name:'無效日期',startDate:'2026-02-30',endDate:'2026-03-02',dailyLimitMinutes:10,shutdownTime:'21:00'},{name:'暑假',startDate:'2026-07-01',endDate:'2026-08-29',dailyLimitMinutes:9999,shutdownTime:'23:00'},{name:'重疊',startDate:'2026-08-01',endDate:'2026-08-31',dailyLimitMinutes:30,shutdownTime:'22:00'}]);
+  assert.equal(out.length,1);assert.equal(out[0].dailyLimitMinutes,1440);
+});
+
 test('clock wallet extension can be disabled', () => {
   const state = core.clone(core.DEFAULT_STATE);
   state.settings.timeMode = 'clock';

@@ -19,6 +19,7 @@ const DEFAULT_STATE = {
     shutdownTime: '21:30',
     weekdayShutdownTime: '21:30',
     weekendShutdownTime: '21:30',
+    vacationSchedules: [],
     rewardExtendsClock: true,
     maxRewardClockExtensionMinutes: 30,
     rewardCapMinutes: 60,
@@ -46,6 +47,27 @@ function localDateKey(date = new Date()) {
   return `${y}-${m}-${d}`;
 }
 function uuid() { return crypto.randomUUID(); }
+function validDateKey(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return false;
+  const [year, month, day] = value.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day;
+}
+function validClockTime(value) { return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value || ''); }
+function normalizeVacationSchedules(items = []) {
+  const normalized = (Array.isArray(items) ? items : [])
+    .filter(x => x && validDateKey(x.startDate) && validDateKey(x.endDate) && x.startDate <= x.endDate && validClockTime(x.shutdownTime) && Number.isFinite(Number(x.dailyLimitMinutes)))
+    .map(x => ({
+      id: String(x.id || uuid()),
+      name: String(x.name || '假期').trim().slice(0, 40) || '假期',
+      startDate: x.startDate,
+      endDate: x.endDate,
+      dailyLimitMinutes: Math.min(1440, Math.max(0, Math.floor(Number(x.dailyLimitMinutes)))),
+      shutdownTime: x.shutdownTime
+    }))
+    .sort((a, b) => a.startDate.localeCompare(b.startDate) || a.endDate.localeCompare(b.endDate));
+  return normalized.filter((item, index, list) => index === 0 || item.startDate > list[index - 1].endDate).slice(0, 30);
+}
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
   return { salt, hash: crypto.scryptSync(password, salt, 64).toString('hex') };
 }
@@ -90,7 +112,7 @@ function rewardMinutes(state, memberId, date = new Date()) {
 function usedMinutes(state, memberId, date = new Date()) {
   return Math.floor((state.usage[`${memberId}:${localDateKey(date)}`] || 0) / 60);
 }
-function dayTypeSettings(settings,date=new Date()){const weekend=[0,6].includes(date.getDay()),enabled=Boolean(settings.dayTypeScheduleEnabled);return{kind:weekend?'weekend':'weekday',dailyLimitMinutes:enabled?Number(weekend?settings.weekendDailyLimitMinutes:settings.weekdayDailyLimitMinutes):Number(settings.dailyLimitMinutes),shutdownTime:enabled?(weekend?settings.weekendShutdownTime:settings.weekdayShutdownTime):settings.shutdownTime};}
+function dayTypeSettings(settings,date=new Date()){const key=localDateKey(date),vacation=normalizeVacationSchedules(settings.vacationSchedules).find(x=>x.startDate<=key&&key<=x.endDate);if(vacation)return{kind:'vacation',name:vacation.name||'假期',dailyLimitMinutes:Number(vacation.dailyLimitMinutes),shutdownTime:vacation.shutdownTime};const weekend=[0,6].includes(date.getDay()),enabled=Boolean(settings.dayTypeScheduleEnabled);return{kind:weekend?'weekend':'weekday',dailyLimitMinutes:enabled?Number(weekend?settings.weekendDailyLimitMinutes:settings.weekdayDailyLimitMinutes):Number(settings.dailyLimitMinutes),shutdownTime:enabled?(weekend?settings.weekendShutdownTime:settings.weekdayShutdownTime):settings.shutdownTime};}
 function remainingMinutes(state, memberId, date = new Date()) {
   const usage=state.rewardUsage?.[localDateKey(date)]||{};
   const rules=dayTypeSettings(state.settings,date),quota = Math.max(0, rules.dailyLimitMinutes + (Number(usage.quotaMinutes)||0) - usedMinutes(state, memberId, date));
@@ -158,4 +180,4 @@ function nextReminder(state, memberId, now = new Date()) {
   return candidates.sort((a, b) => a.at - b.at)[0] || null;
 }
 
-module.exports = { DEFAULT_STATE, clone, uuid, localDateKey, hashPassword, verifyPassword, taskOccursOn, completionFor, completeTask, rewardMinutes, usedMinutes, dayTypeSettings, remainingMinutes, effectiveShutdownAt, spendReward, earliestStartAt, earlyAccessUntil, reminderDue, relativeReminderBucket, nextReminder };
+module.exports = { DEFAULT_STATE, clone, uuid, normalizeVacationSchedules, localDateKey, hashPassword, verifyPassword, taskOccursOn, completionFor, completeTask, rewardMinutes, usedMinutes, dayTypeSettings, remainingMinutes, effectiveShutdownAt, spendReward, earliestStartAt, earlyAccessUntil, reminderDue, relativeReminderBucket, nextReminder };
