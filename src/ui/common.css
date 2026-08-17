@@ -29,3 +29,4 @@ input,select { width:100%; padding:9px 10px; color:white; background:#12131a; bo
 .spread { justify-content:space-between; }
 .pill { padding:4px 9px; border-radius:999px; background:#343549; color:#d9d5ee; font-size:12px; }
 .empty { padding:24px; text-align:center; color:var(--muted); border:1px dashed #3c3d4c; border-radius:12px; }
+.item.unread { border-color:#8174ee; box-shadow:inset 4px 0 #8174ee,0 10px 30px #0003; }

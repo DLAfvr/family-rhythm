@@ -10,9 +10,10 @@ const Store = require('./store');
 const core = require('./core');
 const { FamilyNetwork } = require('./network');
 const { OFFICIAL_REPO, newerVersion, selectSetupAsset } = require('./updater');
+const backup = require('./backup');
 
 let store, network, widget, dashboard, reminderWindow, rewardWindow, quitDialog, shutdownTimer, shutdownAt, activeReminder, activeRewardPrompt, updateStatus=null, parentUnlockedUntil=0, unlockFailures=[], tray;
-const SENSITIVE_IPC=new Set(['save-reminder','delete-reminder','save-task','delete-task','save-settings','save-update-settings','download-update','install-update','choose-custom-sound','network-create','network-join','network-leave','network-set-managed','network-refresh-pairing','managed-settings-update','managed-reminder-toggle','managed-usage-reset','network-set-peer-role']);
+const SENSITIVE_IPC=new Set(['save-reminder','delete-reminder','save-task','delete-task','save-settings','save-update-settings','download-update','install-update','choose-custom-sound','network-create','network-join','network-leave','network-set-managed','network-refresh-pairing','managed-settings-update','managed-reminder-toggle','managed-usage-reset','managed-parent-lock-request','network-set-peer-role','export-backup','import-backup']);
 const fired = new Set();
 let sessionId=Date.now(),sessionActiveSeconds=0,sessionWasIdle=false;
 const singleInstanceLock = app.requestSingleInstanceLock();
@@ -83,10 +84,14 @@ function broadcast(widgetOnly = false) {
   const windows = widgetOnly ? [widget] : [widget, dashboard, reminderWindow, rewardWindow, quitDialog];
   for (const win of windows) if (win && !win.isDestroyed()) win.webContents.send('state-changed');
 }
-function onNetworkChange(){
-  broadcast();
-  for(const notice of network?.consumeNotifications?.()||[])if(notice.type==='parent-lock-removed'&&Notification.isSupported())new Notification({title:'家庭節奏安全通知',body:`${notice.deviceName} 已移除家長鎖`,icon:path.join(__dirname,'assets','icon.png')}).show();
+function addNotification(type,title,body,detail={}){
+  store.state.notifications||=[];const item={id:core.uuid(),type,title,body,detail,at:new Date().toISOString(),read:false};store.state.notifications.push(item);if(store.state.notifications.length>300)store.state.notifications=store.state.notifications.slice(-300);store.save();return item;
 }
+function onNetworkChange(){
+  broadcast();let added=false;
+  for(const notice of network?.consumeNotifications?.()||[]){const copy=notice.type==='parent-lock-removed'?{title:'家庭節奏安全通知',body:`${notice.deviceName} 已移除家長鎖`}:{title:'家庭裝置通知',body:notice.body||`${notice.deviceName} 狀態有變更`};addNotification(notice.type,copy.title,copy.body,notice);added=true;if(Notification.isSupported())new Notification({...copy,icon:path.join(__dirname,'assets','icon.png')}).show();}if(added)broadcast();
+}
+function applyBackup(payload){backup.applyBackup(store.state,payload);store.save();addNotification('backup-imported','備份已還原','提醒、責任表、時間規則與時間晶幣已從備份還原。');broadcast();}
 function remoteItems(kind) {
   const n=store.state.network;if(!n?.remoteItems)return [];
   return Object.entries(n.remoteItems).filter(([deviceId])=>deviceId!==n.deviceId).flatMap(([deviceId,items])=>(items[kind]||[]).map(x=>({deviceId,x}))).filter(({x})=>!x.targetDeviceId||x.targetDeviceId===n.deviceId).map(({deviceId,x})=>({...x,remote:true,memberId:kind==='completions'?`remote:${deviceId}`:'me'}));
@@ -199,6 +204,9 @@ if (singleInstanceLock) app.whenReady().then(() => {
     broadcast();return{ok:true,notified:shouldNotify};
   });
   ipcMain.handle('open-dashboard', openDashboard);
+  ipcMain.handle('export-backup',async()=>{const result=await dialog.showSaveDialog({title:'匯出家庭節奏備份',defaultPath:`家庭節奏備份-${core.localDateKey()}.json`,filters:[{name:'家庭節奏備份',extensions:['json']}]});if(result.canceled||!result.filePath)return{ok:false,canceled:true};fs.writeFileSync(result.filePath,JSON.stringify(backup.createBackup(store.state,app.getVersion()),null,2),'utf8');addNotification('backup-exported','備份已建立',`已儲存至 ${path.basename(result.filePath)}`);broadcast();return{ok:true,filePath:result.filePath};});
+  ipcMain.handle('import-backup',async()=>{const result=await dialog.showOpenDialog({title:'選擇家庭節奏備份',properties:['openFile'],filters:[{name:'家庭節奏備份',extensions:['json']}]});if(result.canceled||!result.filePaths[0])return{ok:false,canceled:true};const file=result.filePaths[0],stat=fs.statSync(file);if(stat.size>25*1024*1024)throw new Error('備份檔超過 25 MB');applyBackup(JSON.parse(fs.readFileSync(file,'utf8')));return{ok:true};});
+  ipcMain.handle('mark-notifications-read',()=>{for(const item of store.state.notifications||[])item.read=true;store.save();broadcast();return true;});
   ipcMain.handle('close-window', e => BrowserWindow.fromWebContents(e.sender)?.close());
   ipcMain.handle('save-reminder', (_, value) => store.update(s => {
     const item = { enabled: true, triggerMode:'clock', repeat: 'daily', type: 'gentle', color: '#7c6df2', sound: 'chime', ...value };
@@ -221,12 +229,12 @@ if (singleInstanceLock) app.whenReady().then(() => {
     if(!out.ok){const task=remoteItems('tasks').find(x=>x.id===id);if(task&&!s.completions.some(x=>x.taskId===id&&x.date===core.localDateKey())){const grant=Math.max(0,Number(task.rewardMinutes)||0),completion={id:core.uuid(),taskId:id,memberId:'me',date:core.localDateKey(),completedAt:new Date().toISOString(),rewardMinutes:grant,shared:true,sourceDeviceId:s.network.deviceId};s.completions.push(completion);s.rewardBalanceMinutes=Math.max(0,Number(s.rewardBalanceMinutes)||0)+grant;out={ok:true,completion,duplicate:false};}}
     broadcast();return out;
   }));
-  ipcMain.handle('save-settings', (_, value) => store.update(s => {
-    if (value.password){s.settings.parentPassword = core.hashPassword(value.password);parentUnlockedUntil=Date.now()+5*60*1000;}
+  ipcMain.handle('save-settings', (_, value) => {let fulfilledLockRequest=false;const out=store.update(s => {
+    if (value.password){s.settings.parentPassword = core.hashPassword(value.password);parentUnlockedUntil=Date.now()+5*60*1000;if(s.network?.parentLockRequest?.id){s.network.lastAppliedParentLockRequestId=s.network.parentLockRequest.id;s.network.parentLockRequest=null;fulfilledLockRequest=true;}}
     if(value.startWithWindows!==undefined){app.setLoginItemSettings({openAtLogin:Boolean(value.startWithWindows),path:process.execPath});s.settings.startWithWindows=Boolean(value.startWithWindows);}
-    for (const key of ['timeControlEnabled','earliestStartEnabled','earliestStartTime','dailyLimitMinutes','timeMode','shutdownTime','rewardExtendsClock','maxRewardClockExtensionMinutes','rewardCapMinutes','shutdownGraceMinutes','simulateShutdown']) if (value[key] !== undefined) s.settings[key] = value[key];
+    for (const key of ['timeControlEnabled','earliestStartEnabled','earliestStartTime','dailyLimitMinutes','timeMode','shutdownTime','dayTypeScheduleEnabled','weekdayDailyLimitMinutes','weekendDailyLimitMinutes','weekdayShutdownTime','weekendShutdownTime','rewardExtendsClock','maxRewardClockExtensionMinutes','rewardCapMinutes','shutdownGraceMinutes','simulateShutdown']) if (value[key] !== undefined) s.settings[key] = value[key];
     broadcast(); return true;
-  }));
+  });if(fulfilledLockRequest)network.queueSecurityEvent('parent-lock-set');return out;});
   ipcMain.handle('ack-reminder', (_, id) => {
     const reminder = store.state.reminders.find(x => x.id === id) || (activeReminder?.id===id?activeReminder:null) || (String(id).includes('-shutdown:') ? { type: 'shutdown' } : null);
     store.update(s => s.events.push({ id: core.uuid(), type: 'reminder-acknowledged', reminderId: id, at: new Date().toISOString() }));
@@ -262,6 +270,7 @@ if (singleInstanceLock) app.whenReady().then(() => {
   ipcMain.handle('managed-settings-update', (_, deviceId, patch) => network.updateManagedSettings(deviceId,patch));
   ipcMain.handle('managed-reminder-toggle', (_, deviceId, reminderId, enabled) => network.toggleManagedReminder(deviceId,reminderId,enabled));
   ipcMain.handle('managed-usage-reset', (_, deviceId) => network.requestUsageReset(deviceId));
+  ipcMain.handle('managed-parent-lock-request',(_,deviceId)=>network.requestParentLock(deviceId));
   ipcMain.handle('network-set-peer-role', (_, deviceId, role) => network.setPeerRole(deviceId,role));
 });
 app.on('window-all-closed', e => e.preventDefault?.());

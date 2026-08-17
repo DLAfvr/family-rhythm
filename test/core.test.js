@@ -70,6 +70,13 @@ test('both mode uses whichever limit arrives first', () => {
   assert.equal(core.remainingMinutes(state, 'me', now), 30);
 });
 
+test('weekday and weekend schedules select separate quota and clock rules', () => {
+  const s=core.clone(core.DEFAULT_STATE);Object.assign(s.settings,{dayTypeScheduleEnabled:true,timeMode:'both',weekdayDailyLimitMinutes:60,weekendDailyLimitMinutes:180,weekdayShutdownTime:'20:00',weekendShutdownTime:'22:30'});
+  const weekday=new Date('2026-08-17T19:30:00'),weekend=new Date('2026-08-16T19:30:00');
+  assert.equal(core.dayTypeSettings(s.settings,weekday).dailyLimitMinutes,60);assert.equal(core.dayTypeSettings(s.settings,weekend).dailyLimitMinutes,180);
+  assert.equal(core.effectiveShutdownAt(s,'me',weekday).getHours(),20);assert.equal(core.effectiveShutdownAt(s,'me',weekend).getHours(),22);
+});
+
 test('clock wallet extension can be disabled', () => {
   const state = core.clone(core.DEFAULT_STATE);
   state.settings.timeMode = 'clock';

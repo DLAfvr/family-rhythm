@@ -146,3 +146,16 @@ test('managed device security event reaches parent once and remains in audit',as
     await child.sync();assert.equal(host.auditView().filter(x=>x.type==='parent-lock-removed').length,1);
   }finally{await child.stop();await host.stop();cleanup(dir);}
 });
+
+test('parent can request a local-only lock without sending the password',async()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-lock-request-test-')),hostStore=new Store(path.join(dir,'host.json')),childStore=new Store(path.join(dir,'child.json'));
+  const host=new FamilyNetwork(hostStore,()=>{},0),child=new FamilyNetwork(childStore,()=>{},0);
+  try{
+    const hs=await host.createFamily('測試家庭','家長電腦');child.port=hs.port;await child.join('127.0.0.1',hs.pairingCode,'孩子電腦');child.setManagement(true);await child.sync();const childId=childStore.state.network.deviceId;
+    host.requestParentLock(childId);await child.sync();const request=childStore.state.network.parentLockRequest;assert.ok(request?.id);assert.equal(host.managementView()[0].lockRequestPending,true);
+    childStore.state.settings.parentPassword={salt:'local-only',hash:'not-transmitted'};childStore.state.network.lastAppliedParentLockRequestId=request.id;childStore.state.network.parentLockRequest=null;child.queueSecurityEvent('parent-lock-set');await child.sync();
+    assert.equal(host.managementView()[0].parentLockConfigured,true);assert.equal(host.managementView()[0].lockRequestPending,false);assert.equal(JSON.stringify(hostStore.state).includes('not-transmitted'),false);
+  }finally{await child.stop();await host.stop();cleanup(dir);}
+});
+
+test('managed device offline alert waits two minutes and is deduplicated',async()=>{const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-offline-alert-test-')),hostStore=new Store(path.join(dir,'host.json')),childStore=new Store(path.join(dir,'child.json'));const host=new FamilyNetwork(hostStore,()=>{},0),child=new FamilyNetwork(childStore,()=>{},0);try{const hs=await host.createFamily('測試家庭','家長電腦');child.port=hs.port;await child.join('127.0.0.1',hs.pairingCode,'孩子電腦');child.setManagement(true);await child.sync();const peer=Object.values(hostStore.state.network.peers)[0];peer.lastSeen=new Date(Date.now()-121000).toISOString();host.markOffline();assert.equal(host.consumeNotifications().filter(x=>x.type==='device-offline').length,1);host.markOffline();assert.equal(host.consumeNotifications().length,0);await child.sync();assert.equal(host.consumeNotifications().filter(x=>x.type==='device-online').length,1);}finally{await child.stop();await host.stop();cleanup(dir);}});

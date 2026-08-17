@@ -12,8 +12,13 @@ const DEFAULT_STATE = {
     earliestStartEnabled: false,
     earliestStartTime: '07:00',
     dailyLimitMinutes: 120,
+    dayTypeScheduleEnabled: false,
+    weekdayDailyLimitMinutes: 120,
+    weekendDailyLimitMinutes: 120,
     timeMode: 'quota',
     shutdownTime: '21:30',
+    weekdayShutdownTime: '21:30',
+    weekendShutdownTime: '21:30',
     rewardExtendsClock: true,
     maxRewardClockExtensionMinutes: 30,
     rewardCapMinutes: 60,
@@ -29,7 +34,8 @@ const DEFAULT_STATE = {
   rewardBalanceMinutes: 0,
   rewardUsage: {},
   usage: {},
-  events: []
+  events: [],
+  notifications: []
 };
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
@@ -84,11 +90,12 @@ function rewardMinutes(state, memberId, date = new Date()) {
 function usedMinutes(state, memberId, date = new Date()) {
   return Math.floor((state.usage[`${memberId}:${localDateKey(date)}`] || 0) / 60);
 }
+function dayTypeSettings(settings,date=new Date()){const weekend=[0,6].includes(date.getDay()),enabled=Boolean(settings.dayTypeScheduleEnabled);return{kind:weekend?'weekend':'weekday',dailyLimitMinutes:enabled?Number(weekend?settings.weekendDailyLimitMinutes:settings.weekdayDailyLimitMinutes):Number(settings.dailyLimitMinutes),shutdownTime:enabled?(weekend?settings.weekendShutdownTime:settings.weekdayShutdownTime):settings.shutdownTime};}
 function remainingMinutes(state, memberId, date = new Date()) {
   const usage=state.rewardUsage?.[localDateKey(date)]||{};
-  const quota = Math.max(0, Number(state.settings.dailyLimitMinutes) + (Number(usage.quotaMinutes)||0) - usedMinutes(state, memberId, date));
-  if (['clock','both'].includes(state.settings.timeMode) && /^\d{2}:\d{2}$/.test(state.settings.shutdownTime || '')) {
-    const [hour, minute] = state.settings.shutdownTime.split(':').map(Number);
+  const rules=dayTypeSettings(state.settings,date),quota = Math.max(0, rules.dailyLimitMinutes + (Number(usage.quotaMinutes)||0) - usedMinutes(state, memberId, date));
+  if (['clock','both'].includes(state.settings.timeMode) && /^\d{2}:\d{2}$/.test(rules.shutdownTime || '')) {
+    const [hour, minute] = rules.shutdownTime.split(':').map(Number);
     const end = new Date(date);
     end.setHours(hour, minute, 0, 0);
     if (state.settings.rewardExtendsClock) end.setMinutes(end.getMinutes() + Math.min(Number(usage.clockMinutes)||0,Math.max(0,Number(state.settings.maxRewardClockExtensionMinutes)||0)));
@@ -98,8 +105,8 @@ function remainingMinutes(state, memberId, date = new Date()) {
   return quota;
 }
 function effectiveShutdownAt(state, memberId, date = new Date()) {
-  if (!['clock','both'].includes(state.settings.timeMode) || !/^\d{2}:\d{2}$/.test(state.settings.shutdownTime || '')) return null;
-  const [hour, minute] = state.settings.shutdownTime.split(':').map(Number);
+  const rules=dayTypeSettings(state.settings,date);if (!['clock','both'].includes(state.settings.timeMode) || !/^\d{2}:\d{2}$/.test(rules.shutdownTime || '')) return null;
+  const [hour, minute] = rules.shutdownTime.split(':').map(Number);
   const end = new Date(date);
   end.setHours(hour, minute, 0, 0);
   const usage=state.rewardUsage?.[localDateKey(date)]||{};
@@ -151,4 +158,4 @@ function nextReminder(state, memberId, now = new Date()) {
   return candidates.sort((a, b) => a.at - b.at)[0] || null;
 }
 
-module.exports = { DEFAULT_STATE, clone, uuid, localDateKey, hashPassword, verifyPassword, taskOccursOn, completionFor, completeTask, rewardMinutes, usedMinutes, remainingMinutes, effectiveShutdownAt, spendReward, earliestStartAt, earlyAccessUntil, reminderDue, relativeReminderBucket, nextReminder };
+module.exports = { DEFAULT_STATE, clone, uuid, localDateKey, hashPassword, verifyPassword, taskOccursOn, completionFor, completeTask, rewardMinutes, usedMinutes, dayTypeSettings, remainingMinutes, effectiveShutdownAt, spendReward, earliestStartAt, earlyAccessUntil, reminderDue, relativeReminderBucket, nextReminder };
