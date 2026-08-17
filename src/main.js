@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, screen, shell, Tray, Menu, nativeImage, powerMonitor, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, shell, Tray, Menu, nativeImage, powerMonitor, dialog, Notification } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
@@ -82,6 +82,10 @@ function openDashboard() {
 function broadcast(widgetOnly = false) {
   const windows = widgetOnly ? [widget] : [widget, dashboard, reminderWindow, rewardWindow, quitDialog];
   for (const win of windows) if (win && !win.isDestroyed()) win.webContents.send('state-changed');
+}
+function onNetworkChange(){
+  broadcast();
+  for(const notice of network?.consumeNotifications?.()||[])if(notice.type==='parent-lock-removed'&&Notification.isSupported())new Notification({title:'家庭節奏安全通知',body:`${notice.deviceName} 已移除家長鎖`,icon:path.join(__dirname,'assets','icon.png')}).show();
 }
 function remoteItems(kind) {
   const n=store.state.network;if(!n?.remoteItems)return [];
@@ -174,7 +178,7 @@ function tick() {
 if (singleInstanceLock) app.whenReady().then(() => {
   store = new Store(path.join(app.getPath('userData'), 'family-rhythm.json'));
   store.state.settings.startWithWindows=app.getLoginItemSettings().openAtLogin;
-  network = new FamilyNetwork(store, broadcast, undefined, app.getVersion());
+  network = new FamilyNetwork(store, onNetworkChange, undefined, app.getVersion());
   createWidget();
   createTray();
   network.resume().catch(()=>{});
@@ -184,6 +188,16 @@ if (singleInstanceLock) app.whenReady().then(() => {
   ipcMain.handle('get-state', stateForUi);
   ipcMain.handle('parent-unlock',(_,password)=>unlockParent(password));
   ipcMain.handle('parent-lock',()=>{parentUnlockedUntil=0;broadcast();return parentLockStatus();});
+  ipcMain.handle('remove-parent-lock',(_,password)=>{
+    if(!store.state.settings.parentPassword)return{ok:true,alreadyRemoved:true};
+    const now=Date.now();unlockFailures=unlockFailures.filter(x=>now-x<60000);if(unlockFailures.length>=5)return{ok:false,reason:'嘗試次數過多，請一分鐘後再試'};
+    if(!core.verifyPassword(String(password||''),store.state.settings.parentPassword)){unlockFailures.push(now);return{ok:false,reason:'家長密碼不正確'};}
+    const shouldNotify=Boolean(store.state.network?.role==='client'&&store.state.network?.managementEnabled);
+    delete store.state.settings.parentPassword;parentUnlockedUntil=0;unlockFailures=[];
+    store.state.events.push({id:core.uuid(),type:'parent-lock-removed',at:new Date().toISOString()});store.save();
+    if(shouldNotify)network.queueSecurityEvent('parent-lock-removed');
+    broadcast();return{ok:true,notified:shouldNotify};
+  });
   ipcMain.handle('open-dashboard', openDashboard);
   ipcMain.handle('close-window', e => BrowserWindow.fromWebContents(e.sender)?.close());
   ipcMain.handle('save-reminder', (_, value) => store.update(s => {

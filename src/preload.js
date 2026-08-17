@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('rhythm', {
   getState: () => ipcRenderer.invoke('get-state'),
   unlockParent: password => ipcRenderer.invoke('parent-unlock', password),
   lockParent: () => ipcRenderer.invoke('parent-lock'),
+  removeParentLock: password => ipcRenderer.invoke('remove-parent-lock', password),
   openDashboard: () => ipcRenderer.invoke('open-dashboard'),
   closeWindow: () => ipcRenderer.invoke('close-window'),
   saveReminder: v => ipcRenderer.invoke('save-reminder', v),

@@ -132,3 +132,17 @@ test('primary manager grants and revokes a co-manager with queued deduplicated a
     assert.throws(()=>parent2.updateManagedSettings(childId,{dailyLimitMinutes:20}),/不是共同管理者/);
   }finally{await parent2.stop();await child.stop();await host.stop();cleanup(dir);}
 });
+
+test('managed device security event reaches parent once and remains in audit',async()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-security-event-test-')),hostStore=new Store(path.join(dir,'host.json')),childStore=new Store(path.join(dir,'child.json'));
+  const host=new FamilyNetwork(hostStore,()=>{},0),child=new FamilyNetwork(childStore,()=>{},0);
+  try{
+    const hs=await host.createFamily('測試家庭','家長電腦');child.port=hs.port;
+    await child.join('127.0.0.1',hs.pairingCode,'孩子電腦');child.setManagement(true);await child.sync();
+    child.queueSecurityEvent('parent-lock-removed');await child.sync();
+    assert.equal(childStore.state.network.pendingSecurityEvents.length,0);
+    assert.equal(host.auditView().filter(x=>x.type==='parent-lock-removed').length,1);
+    assert.equal(host.consumeNotifications()[0].deviceName,'孩子電腦');
+    await child.sync();assert.equal(host.auditView().filter(x=>x.type==='parent-lock-removed').length,1);
+  }finally{await child.stop();await host.stop();cleanup(dir);}
+});
