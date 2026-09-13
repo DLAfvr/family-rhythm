@@ -160,3 +160,23 @@ test('parent can request a local-only lock without sending the password',async()
 });
 
 test('managed device offline alert waits two minutes and is deduplicated',async()=>{const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-offline-alert-test-')),hostStore=new Store(path.join(dir,'host.json')),childStore=new Store(path.join(dir,'child.json'));const host=new FamilyNetwork(hostStore,()=>{},0),child=new FamilyNetwork(childStore,()=>{},0);try{const hs=await host.createFamily('測試家庭','家長電腦');child.port=hs.port;await child.join('127.0.0.1',hs.pairingCode,'孩子電腦');child.setManagement(true);await child.sync();const peer=Object.values(hostStore.state.network.peers)[0];peer.lastSeen=new Date(Date.now()-121000).toISOString();host.markOffline();assert.equal(host.consumeNotifications().filter(x=>x.type==='device-offline').length,1);host.markOffline();assert.equal(host.consumeNotifications().length,0);await child.sync();assert.equal(host.consumeNotifications().filter(x=>x.type==='device-online').length,1);}finally{await child.stop();await host.stop();cleanup(dir);}});
+
+test('one-off task with no chosen date reaches the recipient today',async()=>{
+  const core=require('../src/core');
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-once-test-'));
+  const hs=new Store(path.join(dir,'host.json')),cs=new Store(path.join(dir,'client.json'));
+  const host=new FamilyNetwork(hs,()=>{},0),client=new FamilyNetwork(cs,()=>{},0);
+  try {
+    const status=await host.createFamily('Test','Host');client.port=status.port;
+    await client.join('127.0.0.1',status.pairingCode,'Recipient');
+    const now=new Date();
+    hs.state.tasks.push(core.normalizeTask({id:'once-now',kind:'once',date:'',shared:true,targetDeviceId:cs.state.network.deviceId,rewardMinutes:20},now));hs.save();
+    await client.sync();
+    const task=Object.values(cs.state.network.remoteItems).flatMap(x=>x.tasks||[]).find(x=>x.id==='once-now');
+    assert.ok(task);assert.equal(task.targetDeviceId,cs.state.network.deviceId);
+    assert.equal(core.taskOccursOn(task,now),true);
+    const reloaded=new Store(cs.file);
+    const saved=Object.values(reloaded.state.network.remoteItems).flatMap(x=>x.tasks||[]).find(x=>x.id==='once-now');
+    assert.equal(saved.date,core.localDateKey(now));
+  } finally {await client.stop();await host.stop();cleanup(dir);}
+});

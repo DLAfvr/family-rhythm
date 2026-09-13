@@ -77,6 +77,15 @@ function verifyPassword(password, saved) {
   const expected = Buffer.from(saved.hash, 'hex');
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
+function normalizeTask(value, now = new Date()) {
+  const task = { memberId: 'me', kind: 'daily', rewardMinutes: 0, ...value };
+  if (task.kind === 'once') {
+    if (!task.date) task.date = localDateKey(now);
+    if (!validDateKey(task.date)) throw new Error('請選擇有效的任務日期');
+  }
+  return task;
+}
+
 function taskOccursOn(task, date = new Date()) {
   const key = localDateKey(date);
   if (task.kind === 'once') return task.date === key;
@@ -159,6 +168,15 @@ function reminderDue(reminder, now = new Date(), toleranceSeconds = 30) {
   const delta = (now - scheduled) / 1000;
   return delta >= 0 && delta < toleranceSeconds;
 }
+function reminderOccurrenceKey(reminder, now = new Date()) {
+  return `${reminder.id}:${localDateKey(now)}:${reminder.time}`;
+}
+function pendingClockReminder(reminder, events, now = new Date()) {
+  if (reminder.triggerMode === 'afterStart' || !reminderDue(reminder, now, Infinity)) return false;
+  const key = reminderOccurrenceKey(reminder, now);
+  return !events.some(e => e.type === 'reminder-fired' && (e.occurrenceKey === key ||
+    (!e.occurrenceKey && e.reminderId === reminder.id && localDateKey(new Date(e.at)) === localDateKey(now))));
+}
 function relativeReminderBucket(reminder, activeSeconds) {
   if (!reminder.enabled || reminder.triggerMode !== 'afterStart') return 0;
   const interval=Math.max(1,Number(reminder.delayMinutes)||0)*60;
@@ -180,4 +198,4 @@ function nextReminder(state, memberId, now = new Date()) {
   return candidates.sort((a, b) => a.at - b.at)[0] || null;
 }
 
-module.exports = { DEFAULT_STATE, clone, uuid, normalizeVacationSchedules, localDateKey, hashPassword, verifyPassword, taskOccursOn, completionFor, completeTask, rewardMinutes, usedMinutes, dayTypeSettings, remainingMinutes, effectiveShutdownAt, spendReward, earliestStartAt, earlyAccessUntil, reminderDue, relativeReminderBucket, nextReminder };
+module.exports = { pendingClockReminder, reminderOccurrenceKey, normalizeTask, DEFAULT_STATE, clone, uuid, normalizeVacationSchedules, localDateKey, hashPassword, verifyPassword, taskOccursOn, completionFor, completeTask, rewardMinutes, usedMinutes, dayTypeSettings, remainingMinutes, effectiveShutdownAt, spendReward, earliestStartAt, earlyAccessUntil, reminderDue, relativeReminderBucket, nextReminder };

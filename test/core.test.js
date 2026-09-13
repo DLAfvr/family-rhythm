@@ -132,3 +132,29 @@ test('older settings files receive new defaults without losing saved values', ()
     assert.equal(store.state.settings.timeControlEnabled,true);
   }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+test('one-off task defaults to today and persists without becoming recurring', () => {
+  const now = new Date(2026, 8, 13, 23, 58);
+  const task = core.normalizeTask({id:'temporary',kind:'once',date:'',rewardMinutes:20}, now);
+  assert.equal(task.date, '2026-09-13');
+  assert.equal(core.taskOccursOn(task, now), true);
+  assert.equal(core.taskOccursOn(task, new Date(2026,8,14)), false);
+  const state=core.clone(core.DEFAULT_STATE);state.tasks.push(task);
+  assert.equal(core.completeTask(state,task.id,'me',now).duplicate,false);
+  assert.equal(core.completeTask(state,task.id,'me',now).duplicate,true);
+  assert.equal(state.rewardBalanceMinutes,20);
+  assert.equal(core.normalizeTask({kind:'once',date:'2026-09-15'},now).date,'2026-09-15');
+  assert.throws(()=>core.normalizeTask({kind:'once',date:'2026-02-30'},now),/日期/);
+});
+
+test('clock reminders catch delayed sync once per date and survive restart',()=>{
+  const now=new Date(2026,8,13,15,5),r={id:'late',enabled:true,triggerMode:'clock',repeat:'once',date:'2026-09-13',time:'15:00'};
+  assert.equal(core.pendingClockReminder(r,[],now),true);
+  assert.equal(core.pendingClockReminder(r,[],new Date(2026,8,13,14,59)),false);
+  const events=[{type:'reminder-fired',reminderId:r.id,occurrenceKey:core.reminderOccurrenceKey(r,now),at:now.toISOString()}];
+  assert.equal(core.pendingClockReminder(r,JSON.parse(JSON.stringify(events)),now),false);
+  assert.equal(core.pendingClockReminder(r,[],new Date(2026,8,14,15,5)),false);
+  assert.equal(core.pendingClockReminder({...r,repeat:'daily'},events,new Date(2026,8,14,15,5)),true);
+  assert.equal(core.pendingClockReminder({...r,enabled:false},[],now),false);
+  assert.equal(core.pendingClockReminder({...r,triggerMode:'afterStart'},[],now),false);
+});

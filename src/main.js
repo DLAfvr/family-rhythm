@@ -15,6 +15,7 @@ const backup = require('./backup');
 let store, network, widget, dashboard, reminderWindow, rewardWindow, quitDialog, shutdownTimer, shutdownAt, activeReminder, activeRewardPrompt, updateStatus=null, parentUnlockedUntil=0, unlockFailures=[], tray;
 const SENSITIVE_IPC=new Set(['save-reminder','delete-reminder','save-task','delete-task','save-settings','save-update-settings','download-update','install-update','choose-custom-sound','network-create','network-join','network-leave','network-set-managed','network-refresh-pairing','managed-settings-update','managed-reminder-toggle','managed-usage-reset','managed-parent-lock-request','network-set-peer-role','export-backup','import-backup']);
 const fired = new Set();
+let lastHandledResetId, systemShutdownPending = false;
 let sessionId=Date.now(),sessionActiveSeconds=0,sessionWasIdle=false;
 const singleInstanceLock = app.requestSingleInstanceLock();
 
@@ -88,6 +89,8 @@ function addNotification(type,title,body,detail={}){
   store.state.notifications||=[];const item={id:core.uuid(),type,title,body,detail,at:new Date().toISOString(),read:false};store.state.notifications.push(item);if(store.state.notifications.length>300)store.state.notifications=store.state.notifications.slice(-300);store.save();return item;
 }
 function onNetworkChange(){
+  const resetId=store.state.network?.lastAppliedResetId;
+  if(resetId && resetId!==lastHandledResetId){lastHandledResetId=resetId;cancelForUsageReset();}
   broadcast();let added=false;
   for(const notice of network?.consumeNotifications?.()||[]){const copy=notice.type==='parent-lock-removed'?{title:'家庭節奏安全通知',body:`${notice.deviceName} 已移除家長鎖`}:{title:'家庭裝置通知',body:notice.body||`${notice.deviceName} 狀態有變更`};addNotification(notice.type,copy.title,copy.body,notice);added=true;if(Notification.isSupported())new Notification({...copy,icon:path.join(__dirname,'assets','icon.png')}).show();}if(added)broadcast();
 }
@@ -104,7 +107,7 @@ async function checkForUpdates(){try{const response=await fetch(`https://api.git
 function hashFile(file){return new Promise((resolve,reject)=>{const hash=crypto.createHash('sha256'),stream=fs.createReadStream(file);stream.on('data',chunk=>hash.update(chunk));stream.on('end',()=>resolve(`sha256:${hash.digest('hex')}`));stream.on('error',reject);});}
 async function downloadUpdate(){if(!updateStatus?.available||!updateStatus.asset)throw new Error('目前沒有可下載的官方更新');const asset=updateStatus.asset,dir=path.join(app.getPath('temp'),'family-rhythm-updates'),file=path.join(dir,asset.name);fs.mkdirSync(dir,{recursive:true});fs.rmSync(file,{force:true});updateStatus={...updateStatus,downloading:true,progress:0,ready:false};broadcast();try{const response=await fetch(asset.downloadUrl,{headers:{'User-Agent':`Family-Rhythm/${app.getVersion()}`}});if(!response.ok||!response.body)throw new Error(`下載失敗：HTTP ${response.status}`);let received=0;const counter=new TransformStream({transform(chunk,controller){received+=chunk.byteLength;updateStatus.progress=asset.size?Math.min(100,Math.floor(received/asset.size*100)):0;broadcast();controller.enqueue(chunk);}});await pipeline(Readable.fromWeb(response.body.pipeThrough(counter)),fs.createWriteStream(file,{flags:'wx'}));const actual=await hashFile(file);if(actual!==asset.digest||fs.statSync(file).size!==asset.size){fs.rmSync(file,{force:true});throw new Error('更新檔驗證失敗，已安全刪除');}updateStatus={...updateStatus,downloading:false,progress:100,ready:true,downloadedFile:file};broadcast();return{ok:true,name:asset.name};}catch(e){fs.rmSync(file,{force:true});updateStatus={...updateStatus,downloading:false,ready:false,error:e.message};broadcast();throw e;}}
 async function installUpdate(){const file=updateStatus?.downloadedFile,asset=updateStatus?.asset;if(!updateStatus?.ready||!file||!asset||!fs.existsSync(file))throw new Error('找不到已驗證的更新檔');if(await hashFile(file)!==asset.digest||fs.statSync(file).size!==asset.size){fs.rmSync(file,{force:true});updateStatus.ready=false;throw new Error('更新檔在安裝前驗證失敗，已安全刪除');}const error=await shell.openPath(file);if(error)throw new Error(error);setTimeout(()=>app.quit(),800);return true;}
-function showReminder(reminder) {
+function showReminder(reminder, occurrenceKey) {
   activeReminder = reminder;
   if (reminderWindow && !reminderWindow.isDestroyed()) reminderWindow.close();
   reminderWindow = createWindow(`reminder.html?id=${encodeURIComponent(reminder.id)}`, {
@@ -113,7 +116,7 @@ function showReminder(reminder) {
   });
   reminderWindow.setAlwaysOnTop(true, 'screen-saver');
   reminderWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  store.update(s => s.events.push({ id: core.uuid(), type: 'reminder-fired', reminderId: reminder.id, at: new Date().toISOString() }));
+  store.update(s => s.events.push({ id: core.uuid(), type: 'reminder-fired', reminderId: reminder.id, occurrenceKey, at: new Date().toISOString() }));
 }
 function showRewardPrompt(kind,maxMinutes,title,message){
   const max=Math.min(Math.max(0,Math.floor(Number(maxMinutes)||0)),Math.max(0,Math.floor(Number(store.state.rewardBalanceMinutes)||0)));
@@ -129,15 +132,24 @@ function startShutdownCountdown(reminderId) {
   clearTimeout(shutdownTimer);
   shutdownTimer = setTimeout(() => {
     store.update(s => s.events.push({ id: core.uuid(), type: 'shutdown-due', reminderId, at: new Date().toISOString() }));
-    if (!store.state.settings.simulateShutdown) execFile('shutdown.exe', ['/s', '/t', '30', '/c', '家庭節奏：使用時間結束，請儲存工作。']);
+    if (!store.state.settings.simulateShutdown) {systemShutdownPending=true;execFile('shutdown.exe', ['/s', '/t', '30', '/c', '家庭節奏：使用時間結束，請儲存工作。'], error=>{if(error)systemShutdownPending=false;});}
     shutdownAt = null; broadcast();
   }, minutes * 60_000);
   broadcast();
+}
+function cancelForUsageReset() {
+  clearTimeout(shutdownTimer);shutdownTimer=null;shutdownAt=null;
+  if(systemShutdownPending){execFile('shutdown.exe',['/a'],()=>{});systemShutdownPending=false;}
+  if(activeReminder?.type==='shutdown'){activeReminder=null;if(reminderWindow&&!reminderWindow.isDestroyed())reminderWindow.close();}
+  if(activeRewardPrompt){activeRewardPrompt=null;if(rewardWindow&&!rewardWindow.isDestroyed()){rewardWindow.setClosable(true);rewardWindow.close();}}
+  for(const key of fired)if(key.startsWith('quota-shutdown:'))fired.delete(key);
+  store.update(s=>s.events.push({id:core.uuid(),type:'shutdown-cancelled',reason:'usage-reset',at:new Date().toISOString()}));
 }
 function cancelShutdown(password) {
   if (!core.verifyPassword(password, store.state.settings.parentPassword)) return false;
   clearTimeout(shutdownTimer); shutdownTimer = null; shutdownAt = null;
   execFile('shutdown.exe', ['/a'], () => {});
+  systemShutdownPending = false;
   store.update(s => s.events.push({ id: core.uuid(), type: 'shutdown-cancelled', at: new Date().toISOString() }));
   broadcast(); return true;
 }
@@ -149,12 +161,13 @@ function tick() {
   if (now.getSeconds() % 30 === 0) store.save();
   const dueReminders=[...store.state.reminders.filter(x=>!x.targetDeviceId||x.targetDeviceId===store.state.network?.deviceId),...remoteItems('reminders')];
   for (const r of dueReminders) {
+    if(reminderWindow&&!reminderWindow.isDestroyed())break;
     if(r.triggerMode==='afterStart'){
       const bucket=core.relativeReminderBucket(r,sessionActiveSeconds),fireKey=`${r.id}:session:${sessionId}:${bucket}`;
       if(bucket&&!fired.has(fireKey)){fired.add(fireKey);showReminder(r);}
     }else{
-      const fireKey = `${r.id}:${key}:${r.time}`;
-      if (!fired.has(fireKey) && core.reminderDue(r, now, 2)) { fired.add(fireKey); showReminder(r); }
+      const fireKey = core.reminderOccurrenceKey(r,now);
+      if (!fired.has(fireKey) && core.pendingClockReminder(r, store.state.events, now)) { fired.add(fireKey); showReminder(r,fireKey); }
     }
   }
   const earlyKey=`early-shutdown:${key}:${core.earlyAccessUntil(store.state,now)}`;
@@ -182,6 +195,7 @@ function tick() {
 
 if (singleInstanceLock) app.whenReady().then(() => {
   store = new Store(path.join(app.getPath('userData'), 'family-rhythm.json'));
+  lastHandledResetId=store.state.network?.lastAppliedResetId;
   store.state.settings.startWithWindows=app.getLoginItemSettings().openAtLogin;
   network = new FamilyNetwork(store, onNetworkChange, undefined, app.getVersion());
   createWidget();
@@ -210,6 +224,7 @@ if (singleInstanceLock) app.whenReady().then(() => {
   ipcMain.handle('close-window', e => BrowserWindow.fromWebContents(e.sender)?.close());
   ipcMain.handle('save-reminder', (_, value) => store.update(s => {
     const item = { enabled: true, triggerMode:'clock', repeat: 'daily', type: 'gentle', color: '#7c6df2', sound: 'chime', ...value };
+    if(item.triggerMode==='clock'&&item.repeat==='once'&&!item.date)item.date=core.localDateKey();
     item.shared=Boolean(item.targetDeviceId&&item.targetDeviceId!==s.network?.deviceId);
     const index = s.reminders.findIndex(x => x.id === item.id);
     if (index >= 0) s.reminders[index] = item; else s.reminders.push({ ...item, id: core.uuid() });
@@ -217,7 +232,7 @@ if (singleInstanceLock) app.whenReady().then(() => {
   }));
   ipcMain.handle('delete-reminder', (_, id) => store.update(s => { s.reminders = s.reminders.filter(x => x.id !== id); broadcast(); }));
   ipcMain.handle('save-task', (_, value) => store.update(s => {
-    const item = { memberId: 'me', kind: 'daily', rewardMinutes: 0, ...value };
+    const item = core.normalizeTask(value);
     item.shared=Boolean(item.targetDeviceId&&item.targetDeviceId!==s.network?.deviceId);
     const index = s.tasks.findIndex(x => x.id === item.id);
     if (index >= 0) s.tasks[index] = item; else s.tasks.push({ ...item, id: core.uuid() });
@@ -236,10 +251,11 @@ if (singleInstanceLock) app.whenReady().then(() => {
     broadcast(); return true;
   });if(fulfilledLockRequest)network.queueSecurityEvent('parent-lock-set');return out;});
   ipcMain.handle('ack-reminder', (_, id) => {
+    if(activeReminder?.id!==id)return false;
     const reminder = store.state.reminders.find(x => x.id === id) || (activeReminder?.id===id?activeReminder:null) || (String(id).includes('-shutdown:') ? { type: 'shutdown' } : null);
     store.update(s => s.events.push({ id: core.uuid(), type: 'reminder-acknowledged', reminderId: id, at: new Date().toISOString() }));
     if (reminder?.type === 'shutdown') startShutdownCountdown(id);
-    reminderWindow?.close(); return true;
+    activeReminder=null;reminderWindow?.close(); return true;
   });
   ipcMain.handle('cancel-shutdown', (_, password) => cancelShutdown(password));
   ipcMain.handle('save-update-settings',(_,value={})=>store.update(s=>{s.settings.autoCheckUpdates=value.autoCheckUpdates!==false;broadcast();return true;}));
