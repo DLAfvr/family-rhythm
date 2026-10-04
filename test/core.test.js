@@ -111,6 +111,19 @@ test('earliest start time creates a daily boundary',()=>{
   const at=core.earliestStartAt(state,new Date(2026,7,16,5));assert.equal(at.getHours(),7);assert.equal(at.getMinutes(),15);
 });
 
+test('task mode identifies each active limit and respects the night extension cap',()=>{
+  const state=core.clone(core.DEFAULT_STATE),now=new Date(2026,9,4,22,0);
+  Object.assign(state.settings,{timeControlEnabled:true,timeMode:'both',dailyLimitMinutes:60,shutdownTime:'21:30',rewardExtendsClock:true,maxRewardClockExtensionMinutes:20});
+  state.usage[`me:${core.localDateKey(now)}`]=60*60;state.rewardBalanceMinutes=40;
+  assert.equal(core.timeBlockReason(state,'me',now),'quota');
+  core.spendReward(state,'quota',10,now);
+  assert.equal(core.timeBlockReason(state,'me',now),'clock');
+  assert.equal(core.rewardSpendLimit(state,'clock',now),20);
+  core.spendReward(state,'clock',20,now);
+  assert.equal(core.timeBlockReason(state,'me',new Date(2026,9,4,21,45)),null);
+  assert.equal(core.rewardSpendLimit(state,'clock',now),0);
+});
+
 test('store can save repeatedly without sharing a fixed temporary filename', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'family-rhythm-test-'));
   const file = path.join(dir, 'state.json');

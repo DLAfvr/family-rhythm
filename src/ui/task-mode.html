@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="common.css">
+  <style>
+    body{min-height:100vh;overflow:hidden;background:radial-gradient(circle at 50% -10%,#3c3568 0,#171824 42%,#0c0d13 100%)}
+    .shell{height:100vh;display:grid;grid-template-rows:auto 1fr auto;gap:20px;padding:28px clamp(24px,5vw,72px)}
+    header{display:flex;justify-content:space-between;align-items:center;gap:24px}.brand{display:flex;align-items:center;gap:16px}.brand-mark{width:54px;height:62px;clip-path:polygon(50% 0,88% 25%,76% 78%,50% 100%,24% 78%,12% 25%);background:linear-gradient(135deg,#fff5a8,#8ef0ff 34%,#8b78ff 68%,#402775);filter:drop-shadow(0 0 18px #8d79ff88)}
+    h1{margin:0;font-size:clamp(28px,4vw,46px)}.subtitle{margin:4px 0 0;color:#bbb6cd}.wallet{min-width:230px;padding:14px 18px;border-radius:16px;background:#222336;border:1px solid #454660;text-align:right}.wallet b{font-size:28px;color:#ffe98b}
+    .content{min-height:0;display:grid;grid-template-columns:minmax(0,1.5fr) minmax(300px,.7fr);gap:20px}.tasks,.redeem{min-height:0}.tasks{display:grid;grid-template-rows:auto 1fr}.task-list{overflow:auto;padding-right:6px}.task{display:grid;grid-template-columns:1fr auto;align-items:center;gap:14px;margin-top:12px;padding:17px 18px;border:1px solid #3d3f55;border-radius:15px;background:#1c1d29}.task.done{opacity:.62}.task-title{font-size:19px;font-weight:700}.reward{color:#ffe58d;margin-top:5px}.task button{min-width:120px;padding:12px}.redeem{display:flex;flex-direction:column;gap:14px}.reason{padding:14px;border-radius:12px;background:#2a2438;color:#e1d8f4}.amount{display:grid;grid-template-columns:1fr auto;align-items:end;gap:10px}.amount span{padding-bottom:10px}.redeem button{padding:13px}.sync-state{min-height:22px;color:#aaa5bd}footer{display:flex;justify-content:space-between;align-items:center;gap:16px;color:#8f8ba1}#shutdown{background:#603846}.empty{margin-top:14px}
+    @media(max-width:850px){.content{grid-template-columns:1fr}.redeem{min-height:auto}.wallet{min-width:190px}.shell{padding:20px}.task-list{max-height:44vh}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div class="brand"><div class="brand-mark"></div><div><h1>任務模式</h1><p class="subtitle">現在只能完成自主責任；賺到的時間晶幣可以立刻使用。</p></div></div>
+      <div class="wallet">時間晶幣<br><b id="balance">0</b> 分鐘</div>
+    </header>
+    <section class="content">
+      <div class="card tasks"><div class="row spread"><div><h2 style="margin:0">今天的責任表</h2><div id="progress" class="muted"></div></div><button id="refresh">重新整理同步</button></div><div id="task-list" class="task-list"></div></div>
+      <aside class="card redeem"><h2 style="margin:0">兌換使用時間</h2><div id="reason" class="reason"></div><div class="amount"><label>這次使用<input id="minutes" type="number" min="1"></label><span>分鐘</span></div><button id="use" class="primary">使用晶幣並回到電腦</button><div id="use-note" class="muted"></div><div style="flex:1"></div><button id="shutdown">不做任務，準備關機</button><div id="sync-state" class="sync-state"></div></aside>
+    </section>
+    <footer><span>任務模式期間不計入使用時間</span><span>家庭節奏會保持全螢幕，直到取得可用時間或準備關機</span></footer>
+  </main>
+  <script src="task-mode.js"></script>
+</body>
+</html>

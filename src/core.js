@@ -154,6 +154,21 @@ function spendReward(state,kind,minutes,date=new Date()){
 }
 function earliestStartAt(state,date=new Date()){if(!state.settings.earliestStartEnabled||!/^\d{2}:\d{2}$/.test(state.settings.earliestStartTime||''))return null;const [h,m]=state.settings.earliestStartTime.split(':').map(Number),at=new Date(date);at.setHours(h,m,0,0);return at;}
 function earlyAccessUntil(state,date=new Date()){const sessions=state.rewardUsage?.[localDateKey(date)]?.earlySessions||[];return sessions.reduce((latest,x)=>Math.max(latest,new Date(x.accessUntil).getTime()||0),0);}
+function timeBlockReason(state,memberId='me',date=new Date()){
+  if(!state.settings.timeControlEnabled)return null;
+  const startAt=earliestStartAt(state,date);
+  if(startAt&&date<startAt&&earlyAccessUntil(state,date)<=date.getTime())return'early';
+  if(['quota','both'].includes(state.settings.timeMode)&&remainingMinutes({...state,settings:{...state.settings,timeMode:'quota'}},memberId,date)<=0)return'quota';
+  const end=effectiveShutdownAt(state,memberId,date);
+  return end&&date>=end?'clock':null;
+}
+function rewardSpendLimit(state,kind,date=new Date()){
+  const balance=Math.max(0,Math.floor(Number(state.rewardBalanceMinutes)||0));
+  if(kind!=='clock')return balance;
+  if(state.settings.rewardExtendsClock===false)return 0;
+  const used=Number(state.rewardUsage?.[localDateKey(date)]?.clockMinutes)||0;
+  return Math.min(balance,Math.max(0,(Number(state.settings.maxRewardClockExtensionMinutes)||0)-used));
+}
 function reminderOccursOn(reminder, date = new Date()) {
   if (!reminder.enabled) return false;
   if (reminder.repeat === 'once') return reminder.date === localDateKey(date);
@@ -198,4 +213,4 @@ function nextReminder(state, memberId, now = new Date()) {
   return candidates.sort((a, b) => a.at - b.at)[0] || null;
 }
 
-module.exports = { pendingClockReminder, reminderOccurrenceKey, normalizeTask, DEFAULT_STATE, clone, uuid, normalizeVacationSchedules, localDateKey, hashPassword, verifyPassword, taskOccursOn, completionFor, completeTask, rewardMinutes, usedMinutes, dayTypeSettings, remainingMinutes, effectiveShutdownAt, spendReward, earliestStartAt, earlyAccessUntil, reminderDue, relativeReminderBucket, nextReminder };
+module.exports = { pendingClockReminder, reminderOccurrenceKey, normalizeTask, DEFAULT_STATE, clone, uuid, normalizeVacationSchedules, localDateKey, hashPassword, verifyPassword, taskOccursOn, completionFor, completeTask, rewardMinutes, usedMinutes, dayTypeSettings, remainingMinutes, effectiveShutdownAt, spendReward, earliestStartAt, earlyAccessUntil, timeBlockReason, rewardSpendLimit, reminderDue, relativeReminderBucket, nextReminder };

@@ -12,7 +12,7 @@ const { FamilyNetwork } = require('./network');
 const { OFFICIAL_REPO, newerVersion, selectSetupAsset } = require('./updater');
 const backup = require('./backup');
 
-let store, network, widget, dashboard, reminderWindow, rewardWindow, quitDialog, shutdownTimer, shutdownAt, activeReminder, activeRewardPrompt, updateStatus=null, parentUnlockedUntil=0, unlockFailures=[], tray;
+let store, network, widget, dashboard, reminderWindow, rewardWindow, taskModeWindow, quitDialog, shutdownTimer, shutdownAt, activeReminder, activeRewardPrompt, activeTaskMode, updateStatus=null, parentUnlockedUntil=0, unlockFailures=[], tray;
 const SENSITIVE_IPC=new Set(['save-reminder','delete-reminder','save-task','delete-task','save-settings','save-update-settings','download-update','install-update','choose-custom-sound','network-create','network-join','network-leave','network-set-managed','network-refresh-pairing','managed-settings-update','managed-reminder-toggle','managed-usage-reset','managed-parent-lock-request','network-set-peer-role','export-backup','import-backup']);
 const fired = new Set();
 let lastHandledResetId, systemShutdownPending = false;
@@ -82,7 +82,7 @@ function openDashboard() {
   dashboard.on('closed', () => { dashboard = null; });
 }
 function broadcast(widgetOnly = false) {
-  const windows = widgetOnly ? [widget] : [widget, dashboard, reminderWindow, rewardWindow, quitDialog];
+  const windows = widgetOnly ? [widget] : [widget, dashboard, reminderWindow, rewardWindow, taskModeWindow, quitDialog];
   for (const win of windows) if (win && !win.isDestroyed()) win.webContents.send('state-changed');
 }
 function addNotification(type,title,body,detail={}){
@@ -101,7 +101,10 @@ function remoteItems(kind) {
 }
 function parentLockStatus(){const configured=Boolean(store.state.settings.parentPassword),unlocked=!configured||Date.now()<parentUnlockedUntil;return{configured,unlocked,expiresAt:unlocked&&configured?parentUnlockedUntil:null};}
 function publicUpdateStatus(){if(!updateStatus)return null;const{downloadedFile:_file,...out}=updateStatus;if(out.asset){const{downloadUrl:_url,digest:_digest,...asset}=out.asset;out.asset=asset;}return out;}
-function stateForUi(){const {network:_privateNetwork,soundAssets:_privateSounds,...safe}=store.state,settings={...safe.settings};delete settings.parentPassword;return {...safe,settings,appVersion:app.getVersion(),parentLock:parentLockStatus(),reminders:[...store.state.reminders,...remoteItems('reminders')],tasks:[...store.state.tasks,...remoteItems('tasks')],completions:[...store.state.completions,...remoteItems('completions')],networkStatus:network.status(),managedDevices:network.managementView(),managementAudit:network.auditView(),runtime:{shutdownAt,activeReminder,rewardPrompt:activeRewardPrompt,updateStatus:publicUpdateStatus(),sessionId,sessionActiveSeconds}};}
+function taskModeLimit(kind,date=new Date()){return core.rewardSpendLimit(store.state,kind,date);}
+function currentTimeBlock(date=new Date()){return core.timeBlockReason(store.state,'me',date);}
+function taskModeState(){if(!activeTaskMode)return null;const kind=currentTimeBlock()||activeTaskMode.kind;activeTaskMode.kind=kind;return{...activeTaskMode,kind,maxMinutes:taskModeLimit(kind),balanceMinutes:Math.max(0,Math.floor(Number(store.state.rewardBalanceMinutes)||0))};}
+function stateForUi(){const {network:_privateNetwork,soundAssets:_privateSounds,...safe}=store.state,settings={...safe.settings};delete settings.parentPassword;return {...safe,settings,appVersion:app.getVersion(),parentLock:parentLockStatus(),reminders:[...store.state.reminders,...remoteItems('reminders')],tasks:[...store.state.tasks,...remoteItems('tasks')],completions:[...store.state.completions,...remoteItems('completions')],networkStatus:network.status(),managedDevices:network.managementView(),managementAudit:network.auditView(),runtime:{shutdownAt,activeReminder,rewardPrompt:activeRewardPrompt,taskMode:taskModeState(),updateStatus:publicUpdateStatus(),sessionId,sessionActiveSeconds}};}
 function unlockParent(password){const now=Date.now();unlockFailures=unlockFailures.filter(x=>now-x<60000);if(unlockFailures.length>=5)return{ok:false,reason:'嘗試次數過多，請一分鐘後再試'};if(!store.state.settings.parentPassword||core.verifyPassword(String(password||''),store.state.settings.parentPassword)){parentUnlockedUntil=now+5*60*1000;unlockFailures=[];broadcast();return{ok:true,...parentLockStatus()};}unlockFailures.push(now);return{ok:false,reason:'家長密碼不正確'};}
 async function checkForUpdates(){try{const response=await fetch(`https://api.github.com/repos/${OFFICIAL_REPO}/releases/latest`,{headers:{Accept:'application/vnd.github+json','User-Agent':`Family-Rhythm/${app.getVersion()}`}});if(!response.ok)throw new Error(response.status===404?'官方倉庫還沒有發布 Release':`GitHub 回應 ${response.status}`);const release=await response.json(),latest=String(release.tag_name||release.name||'').replace(/^v/i,''),asset=selectSetupAsset(release,app.getVersion());updateStatus={checkedAt:new Date().toISOString(),available:newerVersion(latest,app.getVersion()),latestVersion:latest,url:release.html_url,asset,error:asset||!newerVersion(latest,app.getVersion())?null:'新版缺少可驗證的官方安裝檔'};}catch(e){updateStatus={checkedAt:new Date().toISOString(),available:false,latestVersion:null,url:null,asset:null,error:e.message};}broadcast();return updateStatus;}
 function hashFile(file){return new Promise((resolve,reject)=>{const hash=crypto.createHash('sha256'),stream=fs.createReadStream(file);stream.on('data',chunk=>hash.update(chunk));stream.on('end',()=>resolve(`sha256:${hash.digest('hex')}`));stream.on('error',reject);});}
@@ -126,6 +129,26 @@ function showRewardPrompt(kind,maxMinutes,title,message){
   rewardWindow.setAlwaysOnTop(true,'screen-saver');rewardWindow.setVisibleOnAllWorkspaces(true,{visibleOnFullScreen:true});
   rewardWindow.on('closed',()=>{rewardWindow=null;activeRewardPrompt=null;broadcast();});return true;
 }
+function closeTaskMode(){
+  activeTaskMode=null;
+  if(taskModeWindow&&!taskModeWindow.isDestroyed()){taskModeWindow.setClosable(true);taskModeWindow.setKiosk(false);taskModeWindow.close();}
+  taskModeWindow=null;broadcast();
+}
+function showTaskMode(kind){
+  const reason=kind||currentTimeBlock()||'quota';
+  clearTimeout(shutdownTimer);shutdownTimer=null;shutdownAt=null;
+  if(systemShutdownPending){execFile('shutdown.exe',['/a'],()=>{});systemShutdownPending=false;}
+  activeReminder=null;if(reminderWindow&&!reminderWindow.isDestroyed())reminderWindow.close();
+  activeRewardPrompt=null;if(rewardWindow&&!rewardWindow.isDestroyed()){rewardWindow.setClosable(true);rewardWindow.close();}
+  activeTaskMode={kind:reason,startedAt:new Date().toISOString()};
+  if(taskModeWindow&&!taskModeWindow.isDestroyed()){taskModeWindow.focus();broadcast();return true;}
+  taskModeWindow=createWindow('task-mode.html',{fullscreen:true,kiosk:true,alwaysOnTop:true,frame:false,skipTaskbar:true,closable:false,minimizable:false,maximizable:false});
+  taskModeWindow.setAlwaysOnTop(true,'screen-saver');taskModeWindow.setVisibleOnAllWorkspaces(true,{visibleOnFullScreen:true});
+  taskModeWindow.webContents.on('before-input-event',(event,input)=>{if(input.key==='Escape'||(input.alt&&input.key==='F4')||(input.control&&String(input.key).toLowerCase()==='w'))event.preventDefault();});
+  taskModeWindow.on('close',event=>{if(activeTaskMode)event.preventDefault();});
+  taskModeWindow.on('closed',()=>{taskModeWindow=null;if(activeTaskMode)showTaskMode(activeTaskMode.kind);});
+  store.update(s=>s.events.push({id:core.uuid(),type:'task-mode-entered',reason,at:new Date().toISOString()}));broadcast();return true;
+}
 function startShutdownCountdown(reminderId) {
   const minutes = Math.max(1, Number(store.state.settings.shutdownGraceMinutes) || 10);
   shutdownAt = Date.now() + minutes * 60_000;
@@ -142,6 +165,7 @@ function cancelForUsageReset() {
   if(systemShutdownPending){execFile('shutdown.exe',['/a'],()=>{});systemShutdownPending=false;}
   if(activeReminder?.type==='shutdown'){activeReminder=null;if(reminderWindow&&!reminderWindow.isDestroyed())reminderWindow.close();}
   if(activeRewardPrompt){activeRewardPrompt=null;if(rewardWindow&&!rewardWindow.isDestroyed()){rewardWindow.setClosable(true);rewardWindow.close();}}
+  if(typeof activeTaskMode!=='undefined'&&activeTaskMode)closeTaskMode();
   for(const key of fired)if(key.startsWith('quota-shutdown:'))fired.delete(key);
   store.update(s=>s.events.push({id:core.uuid(),type:'shutdown-cancelled',reason:'usage-reset',at:new Date().toISOString()}));
 }
@@ -157,11 +181,11 @@ function tick() {
   const now = new Date();
   const key = core.localDateKey(now);
   const isIdle=powerMonitor.getSystemIdleTime()>=300,startAt=core.earliestStartAt(store.state,now),beforeStart=Boolean(store.state.settings.timeControlEnabled&&startAt&&now<startAt),earlyAllowed=core.earlyAccessUntil(store.state,now)>now.getTime(),mayUse=!beforeStart||earlyAllowed;
-  if(isIdle||!mayUse)sessionWasIdle=true;else{if(sessionWasIdle){sessionId=Date.now();sessionActiveSeconds=0;sessionWasIdle=false;}sessionActiveSeconds++;if(store.state.settings.timeControlEnabled)store.state.usage[`me:${key}`]=(store.state.usage[`me:${key}`]||0)+1;}
+  if(isIdle||!mayUse||activeTaskMode)sessionWasIdle=true;else{if(sessionWasIdle){sessionId=Date.now();sessionActiveSeconds=0;sessionWasIdle=false;}sessionActiveSeconds++;if(store.state.settings.timeControlEnabled)store.state.usage[`me:${key}`]=(store.state.usage[`me:${key}`]||0)+1;}
   if (now.getSeconds() % 30 === 0) store.save();
   const dueReminders=[...store.state.reminders.filter(x=>!x.targetDeviceId||x.targetDeviceId===store.state.network?.deviceId),...remoteItems('reminders')];
   for (const r of dueReminders) {
-    if(reminderWindow&&!reminderWindow.isDestroyed())break;
+    if(activeTaskMode||(reminderWindow&&!reminderWindow.isDestroyed()))break;
     if(r.triggerMode==='afterStart'){
       const bucket=core.relativeReminderBucket(r,sessionActiveSeconds),fireKey=`${r.id}:session:${sessionId}:${bucket}`;
       if(bucket&&!fired.has(fireKey)){fired.add(fireKey);showReminder(r);}
@@ -171,7 +195,7 @@ function tick() {
     }
   }
   const earlyKey=`early-shutdown:${key}:${core.earlyAccessUntil(store.state,now)}`;
-  if(beforeStart&&!earlyAllowed&&!shutdownAt&&!activeRewardPrompt&&!fired.has(earlyKey)){
+  if(!activeTaskMode&&beforeStart&&!earlyAllowed&&!shutdownAt&&!activeRewardPrompt&&!fired.has(earlyKey)){
     fired.add(earlyKey);const available=Math.floor(Number(store.state.rewardBalanceMinutes)||0);
     if(available>0)showRewardPrompt('early',available,'還沒到開始使用時間',`現在可花時間晶幣提早使用；原本開放時間是 ${store.state.settings.earliestStartTime}。`);
     else showReminder({id:earlyKey,title:`要到 ${store.state.settings.earliestStartTime} 才能開始使用`,type:'shutdown',color:'#a34f68',sound:'alarm'});
@@ -180,12 +204,12 @@ function tick() {
   const clockKey = `clock-shutdown:${key}:${effectiveEnd?.toISOString() || ''}`;
   const quotaKey = `quota-shutdown:${key}:${Number(store.state.rewardUsage?.[key]?.quotaMinutes)||0}`;
   const quotaEnded=store.state.settings.timeControlEnabled&&['quota','both'].includes(store.state.settings.timeMode)&&core.remainingMinutes({...store.state,settings:{...store.state.settings,timeMode:'quota'}},'me',now)<=0;
-  if(quotaEnded&&!fired.has(quotaKey)&&!activeRewardPrompt){
+  if(!activeTaskMode&&quotaEnded&&!fired.has(quotaKey)&&!activeRewardPrompt){
     fired.add(quotaKey);const available=Number(store.state.rewardBalanceMinutes)||0;
     if(available>0)showRewardPrompt('quota',available,'今天的基本額度用完了','可以選擇花一些累積的時間晶幣繼續使用。');
     else showReminder({id:quotaKey,title:'今天的使用額度用完了',type:'shutdown',color:'#a34f68',sound:'alarm'});
   }
-  if(effectiveEnd&&now>=effectiveEnd&&!fired.has(clockKey)&&!activeRewardPrompt&&!quotaEnded){
+  if(!activeTaskMode&&effectiveEnd&&now>=effectiveEnd&&!fired.has(clockKey)&&!activeRewardPrompt&&!quotaEnded){
     fired.add(clockKey);const used=Number(store.state.rewardUsage?.[key]?.clockMinutes)||0,max=Math.max(0,(Number(store.state.settings.maxRewardClockExtensionMinutes)||0)-used),available=Math.min(max,Number(store.state.rewardBalanceMinutes)||0);
     if(store.state.settings.rewardExtendsClock&&available>0)showRewardPrompt('clock',available,'固定使用時間到了',`今晚依家長設定，還能延長最多 ${max} 分鐘。`);
     else showReminder({id:clockKey,title:'今天的使用時間到了',type:'shutdown',color:'#a34f68',sound:'alarm'});
@@ -248,6 +272,18 @@ if (singleInstanceLock) app.whenReady().then(() => {
     if(!out.ok){const task=remoteItems('tasks').find(x=>x.id===id);if(task&&!s.completions.some(x=>x.taskId===id&&x.date===core.localDateKey())){const grant=Math.max(0,Number(task.rewardMinutes)||0),completion={id:core.uuid(),taskId:id,memberId:'me',date:core.localDateKey(),completedAt:new Date().toISOString(),rewardMinutes:grant,shared:true,sourceDeviceId:s.network.deviceId};s.completions.push(completion);s.rewardBalanceMinutes=Math.max(0,Number(s.rewardBalanceMinutes)||0)+grant;out={ok:true,completion,duplicate:false};}}
     broadcast();return out;
   }));
+  ipcMain.handle('enter-task-mode',(_,kind)=>showTaskMode(kind));
+  ipcMain.handle('task-mode-refresh',async()=>{await network.sync();broadcast();return{taskMode:taskModeState(),network:network.status()};});
+  ipcMain.handle('task-mode-use-reward',(_,minutes)=>{
+    if(!activeTaskMode)return{ok:false,reason:'not_active'};
+    const kind=currentTimeBlock()||activeTaskMode.kind,max=taskModeLimit(kind),amount=Math.min(max,Math.max(0,Math.floor(Number(minutes)||0)));
+    if(!amount)return{ok:false,reason:max?'invalid_amount':'unavailable',state:taskModeState()};
+    store.update(s=>core.spendReward(s,kind,amount));
+    const next=currentTimeBlock();
+    if(next){activeTaskMode.kind=next;broadcast();return{ok:true,unlocked:false,nextKind:next,state:taskModeState()};}
+    store.update(s=>s.events.push({id:core.uuid(),type:'task-mode-unlocked',minutes:amount,at:new Date().toISOString()}));closeTaskMode();return{ok:true,unlocked:true};
+  });
+  ipcMain.handle('task-mode-shutdown',()=>{if(!activeTaskMode)return false;closeTaskMode();startShutdownCountdown('task-mode');return true;});
   ipcMain.handle('save-settings', (_, value) => {let fulfilledLockRequest=false;const out=store.update(s => {
     if (value.password){s.settings.parentPassword = core.hashPassword(value.password);parentUnlockedUntil=Date.now()+5*60*1000;if(s.network?.parentLockRequest?.id){s.network.lastAppliedParentLockRequestId=s.network.parentLockRequest.id;s.network.parentLockRequest=null;fulfilledLockRequest=true;}}
     if(value.startWithWindows!==undefined){app.setLoginItemSettings({openAtLogin:Boolean(value.startWithWindows),path:process.execPath});s.settings.startWithWindows=Boolean(value.startWithWindows);}
@@ -267,7 +303,7 @@ if (singleInstanceLock) app.whenReady().then(() => {
   ipcMain.handle('open-update-page',()=>updateStatus?.url?shell.openExternal(updateStatus.url):false);
   ipcMain.handle('download-update',()=>downloadUpdate());
   ipcMain.handle('install-update',()=>installUpdate());
-  ipcMain.handle('respond-reward', (_, value={}) => {if(!activeRewardPrompt)return false;const prompt=activeRewardPrompt,amount=Math.min(prompt.maxMinutes,Math.max(0,Math.floor(Number(value.minutes)||0)));if(value.use&&amount>0)store.update(s=>core.spendReward(s,prompt.kind,amount));else startShutdownCountdown(`reward-${prompt.kind}`);if(rewardWindow&&!rewardWindow.isDestroyed()){rewardWindow.setClosable(true);rewardWindow.close();}broadcast();return true;});
+  ipcMain.handle('respond-reward', (_, value={}) => {if(!activeRewardPrompt)return false;const prompt=activeRewardPrompt;if(value.taskMode)return showTaskMode(prompt.kind);const amount=Math.min(prompt.maxMinutes,Math.max(0,Math.floor(Number(value.minutes)||0)));if(value.use&&amount>0)store.update(s=>core.spendReward(s,prompt.kind,amount));else startShutdownCountdown(`reward-${prompt.kind}`);if(rewardWindow&&!rewardWindow.isDestroyed()){rewardWindow.setClosable(true);rewardWindow.close();}broadcast();return true;});
   ipcMain.handle('exit-app', (_, password) => {
     if (store.state.settings.parentPassword && !core.verifyPassword(password || '', store.state.settings.parentPassword)) return false;
     app.quit(); return true;
@@ -293,4 +329,5 @@ if (singleInstanceLock) app.whenReady().then(() => {
   ipcMain.handle('managed-parent-lock-request',(_,deviceId)=>network.requestParentLock(deviceId));
   ipcMain.handle('network-set-peer-role', (_, deviceId, role) => network.setPeerRole(deviceId,role));
 });
+app.on('before-quit',()=>{activeTaskMode=null;if(taskModeWindow&&!taskModeWindow.isDestroyed()){taskModeWindow.setClosable(true);taskModeWindow.setKiosk(false);}});
 app.on('window-all-closed', e => e.preventDefault?.());
