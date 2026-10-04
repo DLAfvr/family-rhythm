@@ -120,7 +120,25 @@ test('store can save repeatedly without sharing a fixed temporary filename', () 
     store.state.familyName = '第二次'; store.save();
     assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).familyName, '第二次');
     assert.equal(fs.readdirSync(dir).filter(x => x.endsWith('.tmp')).length, 0);
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); }
+});
+
+test('store restores a corrupt primary from the last known-good backup', () => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-store-recovery-')),file=path.join(dir,'state.json');
+  try {
+    const store=new Store(file);store.state.familyName='還在的家';store.save();store.state.familyName='最後一次正常資料';store.save();
+    fs.writeFileSync(file,'{"broken"');
+    const recovered=new Store(file);
+    assert.equal(recovered.state.familyName,'還在的家');
+    assert.equal(recovered.recoveredFromBackup,true);
+    assert.equal(fs.readdirSync(dir).some(name=>name.includes('.corrupt-')),true);
+  } finally { fs.rmSync(dir,{recursive:true,force:true,maxRetries:5,retryDelay:50}); }
+});
+
+test('store does not silently reset an unreadable primary without a backup', () => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-store-no-backup-')),file=path.join(dir,'state.json');
+  try { fs.writeFileSync(file,'not json');assert.throws(()=>new Store(file),/找不到可用備援/); }
+  finally { fs.rmSync(dir,{recursive:true,force:true,maxRetries:5,retryDelay:50}); }
 });
 
 test('older settings files receive new defaults without losing saved values', () => {

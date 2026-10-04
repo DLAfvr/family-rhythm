@@ -194,10 +194,14 @@ function tick() {
 }
 
 if (singleInstanceLock) app.whenReady().then(() => {
-  store = new Store(path.join(app.getPath('userData'), 'family-rhythm.json'));
+  const dataFile=path.join(app.getPath('userData'),'family-rhythm.json');
+  try { store = new Store(dataFile); }
+  catch(error){dialog.showErrorBox('家庭節奏無法安全讀取資料',`${error.message}\n\n程式已停止，沒有用空白資料覆蓋原檔。請保留以下檔案並尋求修復：\n${dataFile}`);app.quit();return;}
+  const recoveredFromBackup=store.recoveredFromBackup;
   lastHandledResetId=store.state.network?.lastAppliedResetId;
   store.state.settings.startWithWindows=app.getLoginItemSettings().openAtLogin;
   network = new FamilyNetwork(store, onNetworkChange, undefined, app.getVersion());
+  if(recoveredFromBackup)addNotification('data-recovered','家庭資料已自動復原','主要資料檔無法讀取，已從上一份正常備援復原；損壞原檔也已保留。');
   createWidget();
   createTray();
   network.resume().catch(()=>{});
