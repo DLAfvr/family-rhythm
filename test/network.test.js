@@ -34,6 +34,7 @@ test('three family devices see one another online through host status',async()=>
     await a.join('127.0.0.1',hs.pairingCode,'家長筆電');await b.join('127.0.0.1',hs.pairingCode,'孩子電腦');await a.sync();
     const peers=a.status().peers,hostId=hostStore.state.network.deviceId,bId=bStore.state.network.deviceId;
     assert.equal(peers[hostId].online,true);assert.equal(peers[bId].online,true);assert.ok(peers[bId].lastSeen);
+    host.renameFamily('新的家庭名稱');await a.sync();assert.equal(a.status().familyName,'新的家庭名稱');assert.throws(()=>a.renameFamily('不能改'),/只有主要電腦/);
   }finally{await a.stop();await b.stop();await host.stop();cleanup(dir);}
 });
 
@@ -88,6 +89,8 @@ test('managed client authorizes host settings and reminder control',async()=>{
     host.updateManagedSettings(device.deviceId,{timeControlEnabled:false,dailyLimitMinutes:30,earliestStartEnabled:true,earliestStartTime:'07:15',maxRewardClockExtensionMinutes:20,vacationSchedules:[{id:'summer',name:'暑假',startDate:'2026-07-01',endDate:'2026-08-29',dailyLimitMinutes:180,shutdownTime:'22:30'}]});
     host.toggleManagedReminder(device.deviceId,'child-r1',false);
     host.toggleManagedReminder(device.deviceId,'parent-r1',false);
+    host.updateManagedItem(device.deviceId,'tasks',{id:'managed-task',title:'整理書桌',kind:'weekly',weekdays:[1,2,3,4,5],rewardMinutes:10,enabled:true});
+    host.updateManagedItem(device.deviceId,'reminders',{id:'managed-reminder',title:'起來走走',triggerMode:'afterStart',delayMinutes:30,relativeRepeat:true,enabled:true,sound:'soft'});
     host.requestUsageReset(device.deviceId);
     await client.sync();
     assert.equal(clientStore.state.settings.timeControlEnabled,false);
@@ -99,9 +102,16 @@ test('managed client authorizes host settings and reminder control',async()=>{
     assert.equal(clientStore.state.reminders[0].enabled,false);
     const parentReminder=Object.values(clientStore.state.network.remoteItems).flatMap(x=>x.reminders||[]).find(x=>x.id==='parent-r1');
     assert.equal(parentReminder.enabled,false);
-    assert.equal(clientStore.state.usage[`me:${today}`],0);
+    assert.equal(clientStore.state.tasks.find(x=>x.id==='managed-task').title,'整理書桌');
+    assert.equal(clientStore.state.reminders.find(x=>x.id==='managed-reminder').delayMinutes,30);
+    host.updateManagedItem(device.deviceId,'tasks',{id:'managed-task',title:'整理書桌與書包',kind:'weekly',weekdays:[1,2,3,4,5],rewardMinutes:12,enabled:true});
+    host.updateManagedItem(device.deviceId,'reminders',clientStore.state.reminders.find(x=>x.id==='managed-reminder'),true);
     assert.equal(host.managementView()[0].resetPending,true);
     await client.sync();
+    assert.equal(clientStore.state.tasks.find(x=>x.id==='managed-task').title,'整理書桌與書包');
+    assert.equal(clientStore.state.tasks.find(x=>x.id==='managed-task').rewardMinutes,12);
+    assert.equal(clientStore.state.reminders.find(x=>x.id==='managed-reminder').deletedAt!=null,true);
+    assert.equal(clientStore.state.usage[`me:${today}`],0);
     assert.equal(host.managementView()[0].resetPending,false);
   }finally{await client.stop();await host.stop();cleanup(dir);}
 });
@@ -179,4 +189,12 @@ test('one-off task with no chosen date reaches the recipient today',async()=>{
     const saved=Object.values(reloaded.state.network.remoteItems).flatMap(x=>x.tasks||[]).find(x=>x.id==='once-now');
     assert.equal(saved.date,core.localDateKey(now));
   } finally {await client.stop();await host.stop();cleanup(dir);}
+});
+
+test('private items never leave their device and managed summary includes wallet statistics',async()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-private-test-')),hs=new Store(path.join(dir,'host.json')),cs=new Store(path.join(dir,'client.json')),host=new FamilyNetwork(hs,()=>{},0),client=new FamilyNetwork(cs,()=>{},0);try{const status=await host.createFamily('家','主機');client.port=status.port;await client.join('127.0.0.1',status.pairingCode,'孩子');cs.state.tasks.push({id:'private',title:'秘密備忘',kind:'daily',private:true,enabled:true});cs.state.tasks.push({id:'shared',title:'共享責任',kind:'daily',private:false,enabled:true});cs.state.rewardBalanceMinutes=17;client.setManagement(true);await client.sync();const remote=hs.state.network.remoteItems[cs.state.network.deviceId];assert.equal(remote.tasks.some(x=>x.id==='private'),false);assert.equal(remote.tasks.some(x=>x.id==='shared'),true);assert.equal(host.managementView()[0].rewardBalanceMinutes,17);assert.equal(host.managementView()[0].stats.length,30);}finally{await client.stop();await host.stop();cleanup(dir);}
+});
+
+test('host arbitrates bounty capacity and rejects the next claimant',async()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-bounty-test-')),hs=new Store(path.join(dir,'host.json')),aStore=new Store(path.join(dir,'a.json')),bStore=new Store(path.join(dir,'b.json')),host=new FamilyNetwork(hs,()=>{},0),a=new FamilyNetwork(aStore,()=>{},0),b=new FamilyNetwork(bStore,()=>{},0);try{const status=await host.createFamily('家','主機');a.port=status.port;b.port=status.port;await a.join('127.0.0.1',status.pairingCode,'甲');await b.join('127.0.0.1',status.pairingCode,'乙');hs.state.tasks.push({id:'bounty',title:'搶單',kind:'bounty',enabled:true,allFamily:true,maxCompletions:1,rewardMinutes:9,round:1});hs.save();await a.sync();await b.sync();assert.equal((await a.claimBounty('bounty')).claim.rewardMinutes,9);await assert.rejects(()=>b.claimBounty('bounty'),/領完/);}finally{await a.stop();await b.stop();await host.stop();cleanup(dir);}
 });

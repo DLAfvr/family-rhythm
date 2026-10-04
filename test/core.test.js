@@ -74,7 +74,10 @@ test('weekday and weekend schedules select separate quota and clock rules', () =
   const s=core.clone(core.DEFAULT_STATE);Object.assign(s.settings,{dayTypeScheduleEnabled:true,timeMode:'both',weekdayDailyLimitMinutes:60,weekendDailyLimitMinutes:180,weekdayShutdownTime:'20:00',weekendShutdownTime:'22:30'});
   const weekday=new Date('2026-08-17T19:30:00'),weekend=new Date('2026-08-16T19:30:00');
   assert.equal(core.dayTypeSettings(s.settings,weekday).dailyLimitMinutes,60);assert.equal(core.dayTypeSettings(s.settings,weekend).dailyLimitMinutes,180);
-  assert.equal(core.effectiveShutdownAt(s,'me',weekday).getHours(),20);assert.equal(core.effectiveShutdownAt(s,'me',weekend).getHours(),22);
+  assert.equal(core.effectiveShutdownAt(s,'me',weekday).getHours(),20);assert.equal(core.effectiveShutdownAt(s,'me',weekend).getHours(),20);
+  const friday=new Date('2026-08-21T19:30:00'),saturday=new Date('2026-08-22T19:30:00');
+  assert.equal(core.dayTypeSettings(s.settings,friday).dailyLimitMinutes,60);assert.equal(core.effectiveShutdownAt(s,'me',friday).getHours(),22);
+  assert.equal(core.dayTypeSettings(s.settings,saturday).dailyLimitMinutes,180);assert.equal(core.effectiveShutdownAt(s,'me',saturday).getHours(),22);
 });
 
 test('vacation date range overrides weekday and weekend rules', () => {
@@ -188,4 +191,31 @@ test('clock reminders catch delayed sync once per date and survive restart',()=>
   assert.equal(core.pendingClockReminder({...r,repeat:'daily'},events,new Date(2026,8,14,15,5)),true);
   assert.equal(core.pendingClockReminder({...r,enabled:false},[],now),false);
   assert.equal(core.pendingClockReminder({...r,triggerMode:'afterStart'},[],now),false);
+});
+
+test('one-time task disables after completion and reopening creates a new reward round',()=>{
+  const now=new Date(2026,9,4,12),state=core.clone(core.DEFAULT_STATE),task=core.normalizeTask({id:'once-round',kind:'once',date:'2026-10-04',rewardMinutes:5},now);state.tasks.push(task);
+  assert.equal(core.completeTask(state,task.id,'me',now).ok,true);assert.equal(task.enabled,false);assert.equal(state.rewardBalanceMinutes,5);
+  task.enabled=true;task.round++;assert.equal(core.completeTask(state,task.id,'me',now).duplicate,false);assert.equal(state.rewardBalanceMinutes,10);
+});
+
+test('custom task reset keeps early morning in the previous responsibility day',()=>{
+  const task=core.normalizeTask({kind:'weekly',weekdays:[6],customReset:true,resetTime:'04:00'},new Date(2026,9,4));
+  assert.equal(core.responsibilityDateKey(task,new Date(2026,9,4,2,0)),'2026-10-03');
+  assert.equal(core.taskOccursOn(task,new Date(2026,9,4,2,0)),true);
+});
+
+test('annual vacation supports cross-year ranges',()=>{
+  const settings={...core.DEFAULT_STATE.settings,vacationSchedules:[{id:'winter',name:'寒假',annual:true,startMonthDay:'12-20',endMonthDay:'02-10',dailyLimitMinutes:200,shutdownTime:'22:00'}]};
+  assert.equal(core.dayTypeSettings(settings,new Date(2027,0,5)).kind,'vacation');assert.notEqual(core.dayTypeSettings(settings,new Date(2027,2,5)).kind,'vacation');
+});
+
+test('task statistics separate completed pending and missed with timestamps',()=>{
+  const state=core.clone(core.DEFAULT_STATE);state.tasks=[core.normalizeTask({id:'daily-stat',title:'洗餐具',kind:'daily'})];state.completions=[{id:'c',taskId:'daily-stat',memberId:'me',date:'2026-10-03',round:1,completedAt:'2026-10-03T12:30:00.000Z',rewardMinutes:8}];
+  const done=core.taskStats(state,'2026-10-03',new Date(2026,9,4));assert.equal(done.completed[0].completedAt,'2026-10-03T12:30:00.000Z');assert.equal(done.earnedMinutes,8);
+  assert.equal(core.taskStats(state,'2026-10-02',new Date(2026,9,4)).missed.length,1);assert.equal(core.taskStats(state,'2026-10-04',new Date(2026,9,4)).pending.length,1);
+});
+
+test('store keeps only thirty deduplicated snapshots and restores without replacing credentials',()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-snapshot-test-')),file=path.join(dir,'state.json');try{const store=new Store(file);store.state.network={deviceId:'device',token:'secret'};store.state.settings.parentPassword={salt:'s',hash:'h'};for(let i=0;i<35;i++){store.state.familyName=`家庭${i}`;store.createSnapshot('test',true);}assert.equal(store.listSnapshots().length,30);const target=store.listSnapshots().at(-1);store.state.familyName='現在';store.restoreSnapshot(target.id);assert.equal(store.state.network.token,'secret');assert.equal(store.state.settings.parentPassword.hash,'h');assert.notEqual(store.state.familyName,'現在');}finally{fs.rmSync(dir,{recursive:true,force:true});}
 });

@@ -12,8 +12,8 @@ const { FamilyNetwork } = require('./network');
 const { OFFICIAL_REPO, newerVersion, selectSetupAsset } = require('./updater');
 const backup = require('./backup');
 
-let store, network, widget, dashboard, reminderWindow, rewardWindow, taskModeWindow, quitDialog, shutdownTimer, shutdownAt, activeReminder, activeRewardPrompt, activeTaskMode, updateStatus=null, parentUnlockedUntil=0, unlockFailures=[], tray;
-const SENSITIVE_IPC=new Set(['save-reminder','delete-reminder','save-task','delete-task','save-settings','save-update-settings','download-update','install-update','choose-custom-sound','network-create','network-join','network-leave','network-set-managed','network-refresh-pairing','managed-settings-update','managed-reminder-toggle','managed-usage-reset','managed-parent-lock-request','network-set-peer-role','export-backup','import-backup']);
+let store, network, widget, dashboard, managedWindow, reminderWindow, rewardWindow, taskModeWindow, quitDialog, shutdownTimer, shutdownAt, activeReminder, activeRewardPrompt, activeTaskMode, updateStatus=null, parentUnlockedUntil=0, unlockFailures=[], tray;
+const SENSITIVE_IPC=new Set(['save-reminder','delete-reminder','save-task','delete-task','toggle-task','copy-task','save-settings','save-update-settings','download-update','install-update','choose-custom-sound','network-create','network-join','network-leave','network-rename-family','network-set-managed','network-refresh-pairing','managed-settings-update','managed-item-update','managed-reminder-toggle','managed-usage-reset','managed-parent-lock-request','network-set-peer-role','export-backup','import-backup','restore-snapshot']);
 const fired = new Set();
 let lastHandledResetId, systemShutdownPending = false;
 let sessionId=Date.now(),sessionActiveSeconds=0,sessionWasIdle=false;
@@ -45,7 +45,8 @@ function createWindow(file, options = {}) {
   win.loadFile(path.join(__dirname, 'ui', name), { query });
   win.webContents.setWindowOpenHandler(()=>({action:'deny'}));
   win.webContents.on('will-navigate',(event,url)=>{if(!url.startsWith('file:'))event.preventDefault();});
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => {win.show();win.focus();win.webContents.focus();});
+  win.on('focus',()=>{if(!win.isDestroyed())win.webContents.focus();});
   return win;
 }
 function createWidget() {
@@ -77,12 +78,18 @@ function openQuitDialog() {
   quitDialog.on('closed', () => { quitDialog = null; });
 }
 function openDashboard() {
-  if (dashboard && !dashboard.isDestroyed()) return dashboard.focus();
+  if (dashboard && !dashboard.isDestroyed()) {if(dashboard.isMinimized())dashboard.restore();dashboard.setFocusable(true);dashboard.show();dashboard.focus();dashboard.webContents.focus();return;}
   dashboard = createWindow('dashboard.html', { width: 1080, height: 720, minWidth: 840, minHeight: 580, title: '家庭節奏' });
   dashboard.on('closed', () => { dashboard = null; });
 }
+function openManagedDevice(deviceId){
+  const device=network.managementView().find(x=>x.deviceId===deviceId);if(!device)throw new Error('這台裝置尚未授權管理');
+  if(managedWindow&&!managedWindow.isDestroyed())managedWindow.close();
+  managedWindow=createWindow(`management.html?id=${encodeURIComponent(deviceId)}`,{width:900,height:720,minWidth:720,minHeight:560,title:`家庭管理｜${device.name}`});
+  managedWindow.on('closed',()=>{managedWindow=null;});return true;
+}
 function broadcast(widgetOnly = false) {
-  const windows = widgetOnly ? [widget] : [widget, dashboard, reminderWindow, rewardWindow, taskModeWindow, quitDialog];
+  const windows = widgetOnly ? [widget] : [widget, dashboard, managedWindow, reminderWindow, rewardWindow, taskModeWindow, quitDialog];
   for (const win of windows) if (win && !win.isDestroyed()) win.webContents.send('state-changed');
 }
 function addNotification(type,title,body,detail={}){
@@ -97,14 +104,14 @@ function onNetworkChange(){
 function applyBackup(payload){backup.applyBackup(store.state,payload);store.save();addNotification('backup-imported','備份已還原','提醒、責任表、時間規則與時間晶幣已從備份還原。');broadcast();}
 function remoteItems(kind) {
   const n=store.state.network;if(!n?.remoteItems)return [];
-  return Object.entries(n.remoteItems).filter(([deviceId])=>deviceId!==n.deviceId).flatMap(([deviceId,items])=>(items[kind]||[]).map(x=>({deviceId,x}))).filter(({x})=>!x.targetDeviceId||x.targetDeviceId===n.deviceId).map(({deviceId,x})=>({...x,remote:true,memberId:kind==='completions'?`remote:${deviceId}`:'me'}));
+  return Object.entries(n.remoteItems).filter(([deviceId])=>deviceId!==n.deviceId).flatMap(([deviceId,items])=>(items[kind]||[]).map(x=>({deviceId,x}))).filter(({x})=>!x.private&&!x.deletedAt&&(!x.targetDeviceId||x.targetDeviceId===n.deviceId||x.kind==='bounty'&&(x.allFamily||(x.eligibleDeviceIds||[]).includes(n.deviceId)))).map(({deviceId,x})=>({...x,remote:true,sourceDeviceId:deviceId,memberId:kind==='completions'?`remote:${deviceId}`:'me'}));
 }
 function parentLockStatus(){const configured=Boolean(store.state.settings.parentPassword),unlocked=!configured||Date.now()<parentUnlockedUntil;return{configured,unlocked,expiresAt:unlocked&&configured?parentUnlockedUntil:null};}
 function publicUpdateStatus(){if(!updateStatus)return null;const{downloadedFile:_file,...out}=updateStatus;if(out.asset){const{downloadUrl:_url,digest:_digest,...asset}=out.asset;out.asset=asset;}return out;}
 function taskModeLimit(kind,date=new Date()){return core.rewardSpendLimit(store.state,kind,date);}
 function currentTimeBlock(date=new Date()){return core.timeBlockReason(store.state,'me',date);}
 function taskModeState(){if(!activeTaskMode)return null;const kind=currentTimeBlock()||activeTaskMode.kind;activeTaskMode.kind=kind;return{...activeTaskMode,kind,maxMinutes:taskModeLimit(kind),balanceMinutes:Math.max(0,Math.floor(Number(store.state.rewardBalanceMinutes)||0))};}
-function stateForUi(){const {network:_privateNetwork,soundAssets:_privateSounds,...safe}=store.state,settings={...safe.settings};delete settings.parentPassword;return {...safe,settings,appVersion:app.getVersion(),parentLock:parentLockStatus(),reminders:[...store.state.reminders,...remoteItems('reminders')],tasks:[...store.state.tasks,...remoteItems('tasks')],completions:[...store.state.completions,...remoteItems('completions')],networkStatus:network.status(),managedDevices:network.managementView(),managementAudit:network.auditView(),runtime:{shutdownAt,activeReminder,rewardPrompt:activeRewardPrompt,taskMode:taskModeState(),updateStatus:publicUpdateStatus(),sessionId,sessionActiveSeconds}};}
+function stateForUi(){const {network:_privateNetwork,soundAssets:_privateSounds,...safe}=store.state,settings={...safe.settings};delete settings.parentPassword;const tasks=[...store.state.tasks.filter(x=>!x.deletedAt),...remoteItems('tasks')],completions=[...store.state.completions,...remoteItems('completions')],localId=store.state.network?.deviceId,localTasks=tasks.filter(x=>!x.targetDeviceId||x.targetDeviceId===localId),localTaskIds=new Set(localTasks.map(x=>x.id)),localCompletions=completions.filter(x=>localTaskIds.has(x.taskId)),stats=Array.from({length:30},(_,i)=>{const d=new Date();d.setDate(d.getDate()-i);return core.taskStats({...store.state,tasks:localTasks,completions:localCompletions},d);});return {...safe,settings,tasks,reminders:[...store.state.reminders.filter(x=>!x.deletedAt),...remoteItems('reminders')],completions,stats,snapshots:store.listSnapshots(),appVersion:app.getVersion(),parentLock:parentLockStatus(),networkStatus:network.status(),managedDevices:network.managementView(),managementAudit:network.auditView(),runtime:{shutdownAt,activeReminder,rewardPrompt:activeRewardPrompt,taskMode:taskModeState(),updateStatus:publicUpdateStatus(),sessionId,sessionActiveSeconds}};}
 function unlockParent(password){const now=Date.now();unlockFailures=unlockFailures.filter(x=>now-x<60000);if(unlockFailures.length>=5)return{ok:false,reason:'嘗試次數過多，請一分鐘後再試'};if(!store.state.settings.parentPassword||core.verifyPassword(String(password||''),store.state.settings.parentPassword)){parentUnlockedUntil=now+5*60*1000;unlockFailures=[];broadcast();return{ok:true,...parentLockStatus()};}unlockFailures.push(now);return{ok:false,reason:'家長密碼不正確'};}
 async function checkForUpdates(){try{const response=await fetch(`https://api.github.com/repos/${OFFICIAL_REPO}/releases/latest`,{headers:{Accept:'application/vnd.github+json','User-Agent':`Family-Rhythm/${app.getVersion()}`}});if(!response.ok)throw new Error(response.status===404?'官方倉庫還沒有發布 Release':`GitHub 回應 ${response.status}`);const release=await response.json(),latest=String(release.tag_name||release.name||'').replace(/^v/i,''),asset=selectSetupAsset(release,app.getVersion());updateStatus={checkedAt:new Date().toISOString(),available:newerVersion(latest,app.getVersion()),latestVersion:latest,url:release.html_url,asset,error:asset||!newerVersion(latest,app.getVersion())?null:'新版缺少可驗證的官方安裝檔'};}catch(e){updateStatus={checkedAt:new Date().toISOString(),available:false,latestVersion:null,url:null,asset:null,error:e.message};}broadcast();return updateStatus;}
 function hashFile(file){return new Promise((resolve,reject)=>{const hash=crypto.createHash('sha256'),stream=fs.createReadStream(file);stream.on('data',chunk=>hash.update(chunk));stream.on('end',()=>resolve(`sha256:${hash.digest('hex')}`));stream.on('error',reject);});}
@@ -231,8 +238,9 @@ if (singleInstanceLock) app.whenReady().then(() => {
   network.resume().catch(()=>{});
   setTimeout(()=>{if(store.state.settings.autoCheckUpdates)checkForUpdates();},5000);setInterval(()=>{if(store.state.settings.autoCheckUpdates)checkForUpdates();},6*60*60*1000);
   setInterval(tick, 1000);
-  const originalHandle=ipcMain.handle.bind(ipcMain);ipcMain.handle=(channel,handler)=>originalHandle(channel,(event,...args)=>{if(SENSITIVE_IPC.has(channel)&&!parentLockStatus().unlocked)throw new Error('請先解鎖家長控制');return handler(event,...args);});
+  const originalHandle=ipcMain.handle.bind(ipcMain);ipcMain.handle=(channel,handler)=>originalHandle(channel,(event,...args)=>{const managedMemo=['save-reminder','delete-reminder','save-task','delete-task','toggle-task'].includes(channel)&&store.state.network?.managementEnabled;if(SENSITIVE_IPC.has(channel)&&!managedMemo&&!parentLockStatus().unlocked)throw new Error('請先解鎖家長控制');return handler(event,...args);});
   ipcMain.handle('get-state', stateForUi);
+  ipcMain.handle('focus-current-window',event=>{const win=BrowserWindow.fromWebContents(event.sender);if(!win||win.isDestroyed())return false;win.setFocusable(true);if(win.isMinimized())win.restore();win.show();win.focus();win.webContents.focus();return win.isFocused();});
   ipcMain.handle('parent-unlock',(_,password)=>unlockParent(password));
   ipcMain.handle('parent-lock',()=>{parentUnlockedUntil=0;broadcast();return parentLockStatus();});
   ipcMain.handle('remove-parent-lock',(_,password)=>{
@@ -246,32 +254,38 @@ if (singleInstanceLock) app.whenReady().then(() => {
     broadcast();return{ok:true,notified:shouldNotify};
   });
   ipcMain.handle('open-dashboard', openDashboard);
+  ipcMain.handle('open-managed-device',(_,deviceId)=>openManagedDevice(deviceId));
   ipcMain.handle('export-backup',async()=>{const result=await dialog.showSaveDialog({title:'匯出家庭節奏備份',defaultPath:`家庭節奏備份-${core.localDateKey()}.json`,filters:[{name:'家庭節奏備份',extensions:['json']}]});if(result.canceled||!result.filePath)return{ok:false,canceled:true};fs.writeFileSync(result.filePath,JSON.stringify(backup.createBackup(store.state,app.getVersion()),null,2),'utf8');addNotification('backup-exported','備份已建立',`已儲存至 ${path.basename(result.filePath)}`);broadcast();return{ok:true,filePath:result.filePath};});
   ipcMain.handle('import-backup',async()=>{const result=await dialog.showOpenDialog({title:'選擇家庭節奏備份',properties:['openFile'],filters:[{name:'家庭節奏備份',extensions:['json']}]});if(result.canceled||!result.filePaths[0])return{ok:false,canceled:true};const file=result.filePaths[0],stat=fs.statSync(file);if(stat.size>25*1024*1024)throw new Error('備份檔超過 25 MB');applyBackup(JSON.parse(fs.readFileSync(file,'utf8')));return{ok:true};});
+  ipcMain.handle('restore-snapshot',(_,id)=>{store.restoreSnapshot(id);broadcast();return true;});
   ipcMain.handle('mark-notifications-read',()=>{for(const item of store.state.notifications||[])item.read=true;store.save();broadcast();return true;});
   ipcMain.handle('close-window', e => BrowserWindow.fromWebContents(e.sender)?.close());
   ipcMain.handle('save-reminder', (_, value) => store.update(s => {
-    const item = { enabled: true, triggerMode:'clock', repeat: 'daily', type: 'gentle', color: '#7c6df2', sound: 'chime', ...value };
+    const index = s.reminders.findIndex(x => x.id === value.id),item = { enabled: true, triggerMode:'clock', repeat: 'daily', type: 'gentle', color: '#7c6df2', sound: 'chime', ...(index>=0?s.reminders[index]:{}), ...value };
     if(item.triggerMode==='clock'&&item.repeat==='once'&&!item.date)item.date=core.localDateKey();
-    item.shared=Boolean(item.targetDeviceId&&item.targetDeviceId!==s.network?.deviceId);
-    const index = s.reminders.findIndex(x => x.id === item.id);
+    item.private=Boolean(item.private);item.shared=!item.private;item.creatorDeviceId=item.creatorDeviceId||s.network?.deviceId;item.updatedAt=new Date().toISOString();delete item.remote;
     if (index >= 0) s.reminders[index] = item; else s.reminders.push({ ...item, id: core.uuid() });
     broadcast(); return true;
   }));
-  ipcMain.handle('delete-reminder', (_, id) => store.update(s => { s.reminders = s.reminders.filter(x => x.id !== id); broadcast(); }));
+  ipcMain.handle('delete-reminder', (_, id) => store.update(s => { const item=s.reminders.find(x=>x.id===id);if(item){item.deletedAt=new Date().toISOString();item.updatedAt=item.deletedAt;}broadcast(); }));
   ipcMain.handle('save-task', (_, value) => store.update(s => {
-    const item = core.normalizeTask(value);
-    item.shared=Boolean(item.targetDeviceId&&item.targetDeviceId!==s.network?.deviceId);
-    const index = s.tasks.findIndex(x => x.id === item.id);
+    const index = s.tasks.findIndex(x => x.id === value.id),item = core.normalizeTask({...(index>=0?s.tasks[index]:{}),...value});
+    item.private=Boolean(item.private);item.shared=!item.private;item.creatorDeviceId=item.creatorDeviceId||s.network?.deviceId;item.updatedAt=new Date().toISOString();delete item.remote;
+    if(s.network?.managementEnabled&&item.creatorDeviceId===s.network.deviceId)item.rewardMinutes=0;
     if (index >= 0) s.tasks[index] = item; else s.tasks.push({ ...item, id: core.uuid() });
     broadcast(); return true;
   }));
-  ipcMain.handle('delete-task', (_, id) => store.update(s => { s.tasks = s.tasks.filter(x => x.id !== id); broadcast(); }));
-  ipcMain.handle('complete-task', (_, id) => store.update(s => {
+  ipcMain.handle('delete-task', (_, id) => store.update(s => { const item=s.tasks.find(x=>x.id===id);if(item){item.deletedAt=new Date().toISOString();item.updatedAt=item.deletedAt;}broadcast(); }));
+  ipcMain.handle('toggle-task',(_,id,enabled)=>store.update(s=>{const task=s.tasks.find(x=>x.id===id);if(!task)throw new Error('找不到責任');if(task.kind==='once'&&enabled&&!task.enabled){task.round=Math.max(1,Number(task.round)||1)+1;task.date=core.localDateKey();}task.enabled=Boolean(enabled);task.updatedAt=new Date().toISOString();broadcast();return task;}));
+  ipcMain.handle('copy-task',(_,id,targetDeviceIds=[])=>store.update(s=>{const source=s.tasks.find(x=>x.id===id)||remoteItems('tasks').find(x=>x.id===id);if(!source)throw new Error('找不到責任');const copies=[...new Set(targetDeviceIds)].map(targetDeviceId=>({...source,id:core.uuid(),targetDeviceId,creatorDeviceId:s.network?.deviceId,remote:false,private:false,shared:true,round:1,enabled:true,updatedAt:new Date().toISOString()}));s.tasks.push(...copies);broadcast();return copies;}));
+  ipcMain.handle('complete-task', async (_, id) => {
+    const visible=[...store.state.tasks,...remoteItems('tasks')],visibleTask=visible.find(x=>x.id===id);if(visibleTask?.kind==='bounty'){const claim=await network.claimBounty(id);return store.update(s=>{if(s.completions.some(x=>x.taskId===id&&x.round===claim.claim.round&&x.sourceDeviceId===s.network.deviceId))return{ok:true,duplicate:true,completion:s.completions.find(x=>x.taskId===id&&x.round===claim.claim.round)};const completion={id:core.uuid(),taskId:id,memberId:'me',date:core.localDateKey(),round:claim.claim.round,completedAt:claim.claim.claimedAt,rewardMinutes:claim.claim.rewardMinutes,shared:true,sourceDeviceId:s.network.deviceId};s.completions.push(completion);s.rewardBalanceMinutes=Math.max(0,Number(s.rewardBalanceMinutes)||0)+completion.rewardMinutes;broadcast();return{ok:true,completion,duplicate:Boolean(claim.duplicate)};});}
+    return store.update(s => {
     let out=core.completeTask(s,id,'me');
     if(!out.ok){const task=remoteItems('tasks').find(x=>x.id===id);if(task&&!s.completions.some(x=>x.taskId===id&&x.date===core.localDateKey())){const grant=Math.max(0,Number(task.rewardMinutes)||0),completion={id:core.uuid(),taskId:id,memberId:'me',date:core.localDateKey(),completedAt:new Date().toISOString(),rewardMinutes:grant,shared:true,sourceDeviceId:s.network.deviceId};s.completions.push(completion);s.rewardBalanceMinutes=Math.max(0,Number(s.rewardBalanceMinutes)||0)+grant;out={ok:true,completion,duplicate:false};}}
     broadcast();return out;
-  }));
+  });});
+  ipcMain.handle('spend-reward',(_,kind,minutes)=>store.update(s=>{const max=core.rewardSpendLimit(s,kind),amount=Math.min(max,Math.max(0,Math.floor(Number(minutes)||0)));if(!amount)return{ok:false,reason:'unavailable'};core.spendReward(s,kind,amount);broadcast();return{ok:true,minutes:amount,balance:s.rewardBalanceMinutes};}));
   ipcMain.handle('enter-task-mode',(_,kind)=>showTaskMode(kind));
   ipcMain.handle('task-mode-refresh',async()=>{await network.sync();broadcast();return{taskMode:taskModeState(),network:network.status()};});
   ipcMain.handle('task-mode-use-reward',(_,minutes)=>{
@@ -320,10 +334,12 @@ if (singleInstanceLock) app.whenReady().then(() => {
   ipcMain.handle('network-create', (_, value) => network.createFamily(value.familyName,value.deviceName));
   ipcMain.handle('network-join', (_, value) => network.join(value.hostIp,value.code,value.deviceName));
   ipcMain.handle('network-leave', () => network.leave());
+  ipcMain.handle('network-rename-family',(_,name)=>network.renameFamily(name));
   ipcMain.handle('network-sync', async () => {await network.sync();return network.status();});
   ipcMain.handle('network-set-managed', (_, enabled) => network.setManagement(enabled));
   ipcMain.handle('network-refresh-pairing',()=>network.refreshPairingCode());
   ipcMain.handle('managed-settings-update', (_, deviceId, patch) => network.updateManagedSettings(deviceId,patch));
+  ipcMain.handle('managed-item-update',(_,deviceId,kind,item,remove)=>network.updateManagedItem(deviceId,kind,item,remove));
   ipcMain.handle('managed-reminder-toggle', (_, deviceId, reminderId, enabled) => network.toggleManagedReminder(deviceId,reminderId,enabled));
   ipcMain.handle('managed-usage-reset', (_, deviceId) => network.requestUsageReset(deviceId));
   ipcMain.handle('managed-parent-lock-request',(_,deviceId)=>network.requestParentLock(deviceId));

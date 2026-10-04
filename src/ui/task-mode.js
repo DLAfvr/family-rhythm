@@ -2,12 +2,13 @@
 const $=selector=>document.querySelector(selector);
 const dayKey=(date=new Date())=>date.toLocaleDateString('sv-SE');
 function occurs(task,date=new Date()){
-  if(task.kind==='once')return task.date===dayKey(date);
-  if(task.kind==='daily')return true;
-  if(task.kind==='weekly')return(task.weekdays||[]).includes(date.getDay());
+  if(task.enabled===false||task.deletedAt)return false;const d=new Date(date);if(task.customReset&&/^\d\d:\d\d$/.test(task.resetTime||'')){const[h,m]=task.resetTime.split(':').map(Number);if(date.getHours()*60+date.getMinutes()<h*60+m)d.setDate(d.getDate()-1);}
+  if(task.kind==='once')return task.date===dayKey(d);
+  if(task.kind==='daily'||task.kind==='bounty')return true;
+  if(task.kind==='weekly')return(task.weekdays||[]).includes(d.getDay());
   return false;
 }
-function completed(state,taskId){return state.completions.some(x=>x.taskId===taskId&&x.date===dayKey());}
+function completed(state,taskId){const task=state.tasks.find(x=>x.id===taskId),d=new Date();if(task?.customReset&&/^\d\d:\d\d$/.test(task.resetTime||'')){const[h,m]=task.resetTime.split(':').map(Number);if(d.getHours()*60+d.getMinutes()<h*60+m)d.setDate(d.getDate()-1);}const round=Math.max(1,Number(task?.round)||1);return state.completions.some(x=>x.taskId===taskId&&x.date===dayKey(d)&&Math.max(1,Number(x.round)||1)===round);}
 function reasonText(kind){return{early:'現在還沒到開始使用時間；晶幣會兌換成提早使用時間。',quota:'今天的基本額度已用完；晶幣會補入今日可用額度。',clock:'固定關機時間已到；晶幣會在家長允許的上限內延長今晚時間。'}[kind]||'完成責任後，可以使用獲得的時間晶幣。';}
 function escapeHtml(value){return String(value??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
 let busy=false;

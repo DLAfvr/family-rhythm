@@ -54,19 +54,30 @@ function validDateKey(value) {
   return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day;
 }
 function validClockTime(value) { return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value || ''); }
+function validMonthDay(value) {
+  if (!/^\d{2}-\d{2}$/.test(value || '')) return false;
+  const [month, day]=value.split('-').map(Number);
+  return month>=1&&month<=12&&day>=1&&day<=new Date(Date.UTC(2024,month,0)).getUTCDate();
+}
 function normalizeVacationSchedules(items = []) {
   const normalized = (Array.isArray(items) ? items : [])
-    .filter(x => x && validDateKey(x.startDate) && validDateKey(x.endDate) && x.startDate <= x.endDate && validClockTime(x.shutdownTime) && Number.isFinite(Number(x.dailyLimitMinutes)))
+    .filter(x => x && validClockTime(x.shutdownTime) && Number.isFinite(Number(x.dailyLimitMinutes)) && (x.annual ? validMonthDay(x.startMonthDay)&&validMonthDay(x.endMonthDay) : validDateKey(x.startDate)&&validDateKey(x.endDate)&&x.startDate<=x.endDate))
     .map(x => ({
       id: String(x.id || uuid()),
       name: String(x.name || '假期').trim().slice(0, 40) || '假期',
-      startDate: x.startDate,
-      endDate: x.endDate,
+      annual:Boolean(x.annual),
+      ...(x.annual?{startMonthDay:x.startMonthDay,endMonthDay:x.endMonthDay}:{startDate:x.startDate,endDate:x.endDate}),
       dailyLimitMinutes: Math.min(1440, Math.max(0, Math.floor(Number(x.dailyLimitMinutes)))),
       shutdownTime: x.shutdownTime
     }))
-    .sort((a, b) => a.startDate.localeCompare(b.startDate) || a.endDate.localeCompare(b.endDate));
-  return normalized.filter((item, index, list) => index === 0 || item.startDate > list[index - 1].endDate).slice(0, 30);
+    .sort((a,b)=>String(a.startDate||a.startMonthDay).localeCompare(String(b.startDate||b.startMonthDay)));
+  const accepted=[];for(const item of normalized){if(!item.annual&&accepted.some(x=>!x.annual&&item.startDate<=x.endDate&&x.startDate<=item.endDate))continue;accepted.push(item);}return accepted.slice(0,30);
+}
+function vacationOccursOn(item,date=new Date()){
+  if(!item.annual){const key=localDateKey(date);return item.startDate<=key&&key<=item.endDate;}
+  const md=`${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+  if(md==='02-29'&&date.getMonth()!==1)return false;
+  return item.startMonthDay<=item.endMonthDay?(item.startMonthDay<=md&&md<=item.endMonthDay):(md>=item.startMonthDay||md<=item.endMonthDay);
 }
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
   return { salt, hash: crypto.scryptSync(password, salt, 64).toString('hex') };
@@ -78,37 +89,46 @@ function verifyPassword(password, saved) {
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
 function normalizeTask(value, now = new Date()) {
-  const task = { memberId: 'me', kind: 'daily', rewardMinutes: 0, ...value };
+  const task = { memberId:'me',kind:'once',rewardMinutes:0,enabled:true,private:false,resetTime:'00:00',customReset:false,round:1,updatedAt:now.toISOString(),...value };
   if (task.kind === 'once') {
     if (!task.date) task.date = localDateKey(now);
     if (!validDateKey(task.date)) throw new Error('請選擇有效的任務日期');
   }
+  task.enabled=task.enabled!==false;task.private=Boolean(task.private);task.customReset=Boolean(task.customReset);
+  task.resetTime=validClockTime(task.resetTime)?task.resetTime:'00:00';task.round=Math.max(1,Math.floor(Number(task.round)||1));
+  if(task.kind==='bounty'){task.maxCompletions=Math.max(1,Math.floor(Number(task.maxCompletions)||1));task.eligibleDeviceIds=Array.isArray(task.eligibleDeviceIds)?task.eligibleDeviceIds.map(String):[];task.allFamily=task.allFamily!==false;}
   return task;
 }
-
+function responsibilityDate(task,date=new Date()){
+  const shifted=new Date(date);if(task?.customReset&&validClockTime(task.resetTime)){const[h,m]=task.resetTime.split(':').map(Number);if(date.getHours()*60+date.getMinutes()<h*60+m)shifted.setDate(shifted.getDate()-1);}return shifted;
+}
+function responsibilityDateKey(task,date=new Date()){return localDateKey(responsibilityDate(task,date));}
 function taskOccursOn(task, date = new Date()) {
-  const key = localDateKey(date);
+  if(!task||task.enabled===false||task.deletedAt)return false;
+  const effective=responsibilityDate(task,date),key=localDateKey(effective);
   if (task.kind === 'once') return task.date === key;
-  if (task.kind === 'daily') return true;
-  if (task.kind === 'weekly') return (task.weekdays || []).includes(date.getDay());
+  if (task.kind === 'daily'||task.kind==='bounty') return true;
+  if (task.kind === 'weekly') return (task.weekdays || []).includes(effective.getDay());
   return false;
 }
 function completionFor(state, taskId, memberId, date = new Date()) {
-  const key = localDateKey(date);
-  return state.completions.find(x => x.taskId === taskId && x.memberId === memberId && x.date === key);
+  const task=state.tasks.find(x=>x.id===taskId),key=responsibilityDateKey(task,date),round=Math.max(1,Number(task?.round)||1);
+  return state.completions.find(x => x.taskId === taskId && x.memberId === memberId && x.date === key && Math.max(1,Number(x.round)||1)===round);
 }
 function completeTask(state, taskId, memberId, date = new Date()) {
   const task = state.tasks.find(x => x.id === taskId);
-  if (!task || task.memberId !== memberId || !taskOccursOn(task, date)) return { ok: false, reason: 'not_available' };
+  if (!task || task.memberId !== memberId) return { ok: false, reason: 'not_available' };
   const existing = completionFor(state, taskId, memberId, date);
   if (existing) return { ok: true, completion: existing, duplicate: true };
+  if (!taskOccursOn(task, date)) return { ok: false, reason: 'not_available' };
   const granted=Math.max(0,Number(task.rewardMinutes)||0);
   const completion = {
-    id: uuid(), taskId, memberId, date: localDateKey(date), completedAt: date.toISOString(),
+    id: uuid(), taskId, memberId, date: responsibilityDateKey(task,date),round:Math.max(1,Number(task.round)||1), completedAt: date.toISOString(),
     rewardMinutes: granted
   };
   state.completions.push(completion);
   state.rewardBalanceMinutes=Math.max(0,Number(state.rewardBalanceMinutes)||0)+granted;
+  if(task.kind==='once'){task.enabled=false;task.updatedAt=date.toISOString();}
   return { ok: true, completion, duplicate: false };
 }
 function rewardMinutes(state, memberId, date = new Date()) {
@@ -121,7 +141,12 @@ function rewardMinutes(state, memberId, date = new Date()) {
 function usedMinutes(state, memberId, date = new Date()) {
   return Math.floor((state.usage[`${memberId}:${localDateKey(date)}`] || 0) / 60);
 }
-function dayTypeSettings(settings,date=new Date()){const key=localDateKey(date),vacation=normalizeVacationSchedules(settings.vacationSchedules).find(x=>x.startDate<=key&&key<=x.endDate);if(vacation)return{kind:'vacation',name:vacation.name||'假期',dailyLimitMinutes:Number(vacation.dailyLimitMinutes),shutdownTime:vacation.shutdownTime};const weekend=[0,6].includes(date.getDay()),enabled=Boolean(settings.dayTypeScheduleEnabled);return{kind:weekend?'weekend':'weekday',dailyLimitMinutes:enabled?Number(weekend?settings.weekendDailyLimitMinutes:settings.weekdayDailyLimitMinutes):Number(settings.dailyLimitMinutes),shutdownTime:enabled?(weekend?settings.weekendShutdownTime:settings.weekdayShutdownTime):settings.shutdownTime};}
+function dayTypeSettings(settings,date=new Date()){const vacation=normalizeVacationSchedules(settings.vacationSchedules).find(x=>vacationOccursOn(x,date));if(vacation)return{kind:'vacation',name:vacation.name||'假期',dailyLimitMinutes:Number(vacation.dailyLimitMinutes),shutdownTime:vacation.shutdownTime};const day=date.getDay(),weekendQuota=[0,6].includes(day),weekendNight=[5,6].includes(day),enabled=Boolean(settings.dayTypeScheduleEnabled);return{kind:weekendQuota?'weekend':'weekday',dailyLimitMinutes:enabled?Number(weekendQuota?settings.weekendDailyLimitMinutes:settings.weekdayDailyLimitMinutes):Number(settings.dailyLimitMinutes),shutdownTime:enabled?(weekendNight?settings.weekendShutdownTime:settings.weekdayShutdownTime):settings.shutdownTime};}
+function taskStats(state,date=new Date(),now=new Date()){
+  const dateKey=typeof date==='string'?date:localDateKey(date),day=new Date(`${dateKey}T12:00:00`),today=localDateKey(now),tasks=(state.tasks||[]).filter(t=>!t.deletedAt&&t.kind!=='once'?taskOccursOn({...t,enabled:true},day):(t.date===dateKey));
+  const rows=tasks.map(task=>{const completion=(state.completions||[]).filter(c=>c.taskId===task.id&&c.date===dateKey).sort((a,b)=>String(a.completedAt).localeCompare(String(b.completedAt)))[0];return{taskId:task.id,title:task.title,rewardMinutes:Number(completion?.rewardMinutes)||0,completedAt:completion?.completedAt||null,status:completion?'completed':dateKey<today?'missed':'pending'};});
+  return{date:dateKey,completed:rows.filter(x=>x.status==='completed'),pending:rows.filter(x=>x.status==='pending'),missed:rows.filter(x=>x.status==='missed'),earnedMinutes:rows.reduce((n,x)=>n+x.rewardMinutes,0)};
+}
 function remainingMinutes(state, memberId, date = new Date()) {
   const usage=state.rewardUsage?.[localDateKey(date)]||{};
   const rules=dayTypeSettings(state.settings,date),quota = Math.max(0, rules.dailyLimitMinutes + (Number(usage.quotaMinutes)||0) - usedMinutes(state, memberId, date));
@@ -213,4 +238,4 @@ function nextReminder(state, memberId, now = new Date()) {
   return candidates.sort((a, b) => a.at - b.at)[0] || null;
 }
 
-module.exports = { pendingClockReminder, reminderOccurrenceKey, normalizeTask, DEFAULT_STATE, clone, uuid, normalizeVacationSchedules, localDateKey, hashPassword, verifyPassword, taskOccursOn, completionFor, completeTask, rewardMinutes, usedMinutes, dayTypeSettings, remainingMinutes, effectiveShutdownAt, spendReward, earliestStartAt, earlyAccessUntil, timeBlockReason, rewardSpendLimit, reminderDue, relativeReminderBucket, nextReminder };
+module.exports = { pendingClockReminder, reminderOccurrenceKey, normalizeTask, DEFAULT_STATE, clone, uuid, normalizeVacationSchedules, vacationOccursOn, localDateKey, responsibilityDateKey, hashPassword, verifyPassword, taskOccursOn, completionFor, completeTask, taskStats, rewardMinutes, usedMinutes, dayTypeSettings, remainingMinutes, effectiveShutdownAt, spendReward, earliestStartAt, earlyAccessUntil, timeBlockReason, rewardSpendLimit, reminderDue, relativeReminderBucket, nextReminder };

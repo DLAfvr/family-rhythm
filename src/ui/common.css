@@ -1,11 +1,17 @@
 :root { color-scheme: dark; font-family: "Microsoft JhengHei UI", "Segoe UI", sans-serif; --ink:#f5f2ff; --muted:#aaa5bd; --panel:#1d1e29; --accent:#8174ee; }
 * { box-sizing: border-box; }
+[hidden] { display:none !important; }
 body { margin:0; color:var(--ink); background:radial-gradient(circle at 20% 0,#29263c,#111219 55%); }
 button,input,select { font:inherit; }
 button { border:0; border-radius:10px; padding:9px 14px; color:white; background:#3b3c4d; cursor:pointer; }
 button.primary { background:linear-gradient(135deg,#8c7cf4,#6456d8); }
 button.danger { background:#713b49; }
 input,select { width:100%; padding:9px 10px; color:white; background:#12131a; border:1px solid #3b3c4b; border-radius:9px; }
+.check[type="checkbox"] { appearance:none; -webkit-appearance:none; flex:0 0 auto; width:46px !important; height:26px; padding:0; margin:0; border:1px solid #595a70; border-radius:999px; background-color:#444655; background-image:radial-gradient(circle,#f8f7ff 0 7px,transparent 8px); background-repeat:no-repeat; background-size:18px 18px; background-position:3px center; transition:background-color .18s ease,background-position .18s ease,border-color .18s ease,box-shadow .18s ease; cursor:pointer; }
+.check[type="checkbox"]:checked { background-color:#7668e8; border-color:#9589ff; background-position:calc(100% - 3px) center; box-shadow:0 0 0 3px #7869e52b; }
+.check[type="checkbox"]:focus-visible { outline:2px solid #b7adff; outline-offset:2px; }
+.check[type="checkbox"]:disabled { opacity:.38; cursor:not-allowed; }
+input:disabled,select:disabled { opacity:.5; cursor:not-allowed; background:#191a22; color:#898596; }
 .card { background:rgba(31,32,44,.92); border:1px solid #333446; border-radius:16px; padding:18px; box-shadow:0 14px 40px #0005; }
 .card > h2:first-child { margin-top:0; }
 .card > input, .card > select { margin-bottom:10px; }
@@ -22,6 +28,9 @@ input,select { width:100%; padding:9px 10px; color:white; background:#12131a; bo
 .page > .grid { margin-top:14px; }
 .page > .row + .grid { margin-top:14px; }
 .page > p + .grid { margin-top:14px; }
+.page > p + #family-connected, #family-connected > .card + h2, #family-connected > h2 + .grid { margin-top:18px; }
+.form + .grid, .toolbar + .grid, .toolbar + .empty, .sound-actions + button { margin-top:14px; }
+.card > .row + .empty, .card > .row + .stats-list { margin-top:14px; }
 .card .row + .row { margin-top:10px; }
 .card p:last-child { margin-bottom:0; }
 .muted { color:var(--muted); }
