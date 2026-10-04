@@ -51,7 +51,7 @@ function createWindow(file, options = {}) {
 function createWidget() {
   const area = screen.getPrimaryDisplay().workArea;
   widget = createWindow('widget.html', {
-    width: 340, height: 252, x: area.x + area.width - 360, y: area.y + 20,
+    width: 340, height: 302, x: area.x + area.width - 360, y: area.y + 20,
     frame: false, transparent: true, resizable: false, alwaysOnTop: false, skipTaskbar: true
   });
 }

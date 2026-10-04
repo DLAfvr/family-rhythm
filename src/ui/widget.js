@@ -1,5 +1,6 @@
 'use strict';
 function timeText(date) { return date.toLocaleTimeString('zh-TW', { hour:'2-digit', minute:'2-digit' }); }
+function countdownText(milliseconds){const seconds=Math.max(0,Math.ceil(milliseconds/1000)),minutes=Math.floor(seconds/60);return`${String(minutes).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;}
 function activeDayRules(settings,date=new Date()){const key=date.toLocaleDateString('sv-SE'),vacation=(settings.vacationSchedules||[]).find(x=>x.startDate<=key&&key<=x.endDate);if(vacation)return{limit:Number(vacation.dailyLimitMinutes),time:vacation.shutdownTime,name:vacation.name||'假期'};const weekend=[0,6].includes(date.getDay()),split=Boolean(settings.dayTypeScheduleEnabled);return{limit:split?Number(weekend?settings.weekendDailyLimitMinutes:settings.weekdayDailyLimitMinutes):Number(settings.dailyLimitMinutes),time:split?(weekend?settings.weekendShutdownTime:settings.weekdayShutdownTime):settings.shutdownTime};}
 async function render() {
   const s = await window.rhythm.getState();
@@ -12,7 +13,10 @@ async function render() {
     const [h,m]=rules.time.split(':').map(Number), end=new Date(),extension=s.settings.rewardExtendsClock?Math.min(Number(rewardUse.clockMinutes)||0,Number(s.settings.maxRewardClockExtensionMinutes)||0):0; end.setHours(h,m+extension,0,0);clockRemaining=Math.max(0,Math.ceil((end-Date.now())/60000));
   }
   const remaining=s.settings.timeMode==='clock'?clockRemaining:s.settings.timeMode==='both'?Math.min(quotaRemaining,clockRemaining):quotaRemaining;
-  document.querySelector('#time').textContent = !s.settings.timeControlEnabled ? '自由使用' : s.runtime.shutdownAt ? `關機 ${Math.max(0,Math.ceil((s.runtime.shutdownAt-Date.now())/60000))} 分` : `${remaining} 分鐘`;
+  const countingDown=Number(s.runtime.shutdownAt)>Date.now(),countdown=document.querySelector('#shutdown-countdown');
+  countdown.hidden=!countingDown;
+  if(countingDown){document.querySelector('#shutdown-remaining').textContent=countdownText(Number(s.runtime.shutdownAt)-Date.now());document.querySelector('#status').textContent='關機倒數';}
+  document.querySelector('#time').textContent = !s.settings.timeControlEnabled ? '自由使用' : countingDown ? '請儲存工作' : `${remaining} 分鐘`;
   document.querySelector('#reward').textContent = `時間晶幣 ${Number(s.rewardBalanceMinutes)||0} 分鐘 · 今日 +${earned}`;
   const fixed=s.reminders.filter(x=>x.enabled&&x.triggerMode!=='afterStart'&&x.time).map(x=>({x,at:nextAt(x),relative:false})).filter(x=>x.at);
   const relative=s.reminders.filter(x=>x.enabled&&x.triggerMode==='afterStart'&&Number(x.delayMinutes)>0).map(x=>{const interval=Number(x.delayMinutes)*60,used=s.runtime.sessionActiveSeconds||0,remain=x.relativeRepeat?interval-(used%interval):Math.max(0,interval-used);return{x,at:new Date(Date.now()+remain*1000),relative:true,remain};}).filter(x=>x.x.relativeRepeat||x.remain>0);
