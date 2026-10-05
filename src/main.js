@@ -14,6 +14,7 @@ const backup = require('./backup');
 
 let store, network, widget, dashboard, managedWindow, reminderWindow, rewardWindow, taskModeWindow, quitDialog, shutdownTimer, shutdownAt, activeReminder, activeRewardPrompt, activeTaskMode, updateStatus=null, parentUnlockedUntil=0, unlockFailures=[], tray;
 const SENSITIVE_IPC=new Set(['save-reminder','delete-reminder','save-task','delete-task','toggle-task','copy-task','save-settings','save-update-settings','download-update','install-update','choose-custom-sound','network-create','network-join','network-leave','network-rename-family','network-set-managed','network-refresh-pairing','managed-settings-update','managed-item-update','managed-reminder-toggle','managed-usage-reset','managed-parent-lock-request','network-set-peer-role','export-backup','import-backup','restore-snapshot']);
+const MANAGER_CONTROLLED_SETTING_KEYS=['startWithWindows','timeControlEnabled','earliestStartEnabled','earliestStartTime','dailyLimitMinutes','timeMode','shutdownTime','dayTypeScheduleEnabled','weekdayDailyLimitMinutes','weekendDailyLimitMinutes','weekdayShutdownTime','weekendShutdownTime','vacationSchedules','rewardExtendsClock','maxRewardClockExtensionMinutes','rewardCapMinutes','shutdownGraceMinutes','simulateShutdown'];
 const fired = new Set();
 let lastHandledResetId, systemShutdownPending = false;
 let sessionId=Date.now(),sessionActiveSeconds=0,sessionWasIdle=false;
@@ -46,7 +47,6 @@ function createWindow(file, options = {}) {
   win.webContents.setWindowOpenHandler(()=>({action:'deny'}));
   win.webContents.on('will-navigate',(event,url)=>{if(!url.startsWith('file:'))event.preventDefault();});
   win.once('ready-to-show', () => {win.show();win.focus();win.webContents.focus();});
-  win.on('focus',()=>{if(!win.isDestroyed())win.webContents.focus();});
   return win;
 }
 function createWidget() {
@@ -298,7 +298,7 @@ if (singleInstanceLock) app.whenReady().then(() => {
     store.update(s=>s.events.push({id:core.uuid(),type:'task-mode-unlocked',minutes:amount,at:new Date().toISOString()}));closeTaskMode();return{ok:true,unlocked:true};
   });
   ipcMain.handle('task-mode-shutdown',()=>{if(!activeTaskMode)return false;closeTaskMode();startShutdownCountdown('task-mode');return true;});
-  ipcMain.handle('save-settings', (_, value) => {let fulfilledLockRequest=false;const out=store.update(s => {
+  ipcMain.handle('save-settings', (_, value) => {if(store.state.network?.role==='client'&&store.state.network?.managementEnabled&&MANAGER_CONTROLLED_SETTING_KEYS.some(key=>value[key]!==undefined))throw new Error('這台裝置的使用時間設定由家庭管理員控制');let fulfilledLockRequest=false;const out=store.update(s => {
     if (value.password){s.settings.parentPassword = core.hashPassword(value.password);parentUnlockedUntil=Date.now()+5*60*1000;if(s.network?.parentLockRequest?.id){s.network.lastAppliedParentLockRequestId=s.network.parentLockRequest.id;s.network.parentLockRequest=null;fulfilledLockRequest=true;}}
     if(value.startWithWindows!==undefined){app.setLoginItemSettings({openAtLogin:Boolean(value.startWithWindows),path:process.execPath});s.settings.startWithWindows=Boolean(value.startWithWindows);}
     for (const key of ['timeControlEnabled','earliestStartEnabled','earliestStartTime','dailyLimitMinutes','timeMode','shutdownTime','dayTypeScheduleEnabled','weekdayDailyLimitMinutes','weekendDailyLimitMinutes','weekdayShutdownTime','weekendShutdownTime','vacationSchedules','rewardExtendsClock','maxRewardClockExtensionMinutes','rewardCapMinutes','shutdownGraceMinutes','simulateShutdown']) if (value[key] !== undefined) s.settings[key] = key==='vacationSchedules'?core.normalizeVacationSchedules(value[key]):value[key];
@@ -319,7 +319,8 @@ if (singleInstanceLock) app.whenReady().then(() => {
   ipcMain.handle('install-update',()=>installUpdate());
   ipcMain.handle('respond-reward', (_, value={}) => {if(!activeRewardPrompt)return false;const prompt=activeRewardPrompt;if(value.taskMode)return showTaskMode(prompt.kind);const amount=Math.min(prompt.maxMinutes,Math.max(0,Math.floor(Number(value.minutes)||0)));if(value.use&&amount>0)store.update(s=>core.spendReward(s,prompt.kind,amount));else startShutdownCountdown(`reward-${prompt.kind}`);if(rewardWindow&&!rewardWindow.isDestroyed()){rewardWindow.setClosable(true);rewardWindow.close();}broadcast();return true;});
   ipcMain.handle('exit-app', (_, password) => {
-    if (store.state.settings.parentPassword && !core.verifyPassword(password || '', store.state.settings.parentPassword)) return false;
+    const passwordRequired=Boolean(store.state.network?.managementEnabled&&store.state.settings.parentPassword);
+    if (passwordRequired && !core.verifyPassword(password || '', store.state.settings.parentPassword)) return false;
     app.quit(); return true;
   });
   ipcMain.handle('choose-sound', async () => shell.openPath(path.join(__dirname, 'assets')));
