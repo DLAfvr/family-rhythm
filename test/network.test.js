@@ -38,6 +38,26 @@ test('three family devices see one another online through host status',async()=>
   }finally{await a.stop();await b.stop();await host.stop();cleanup(dir);}
 });
 
+test('managed summaries keep assignments on their intended device',async()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-managed-visibility-')),hostStore=new Store(path.join(dir,'host.json')),aStore=new Store(path.join(dir,'a.json')),bStore=new Store(path.join(dir,'b.json'));
+  const host=new FamilyNetwork(hostStore,()=>{},0),a=new FamilyNetwork(aStore,()=>{},0),b=new FamilyNetwork(bStore,()=>{},0);
+  try{
+    const hs=await host.createFamily('可見性測試','主要電腦');a.port=hs.port;b.port=hs.port;
+    await a.join('127.0.0.1',hs.pairingCode,'洋洋的電腦');await b.join('127.0.0.1',hs.pairingCode,'昊昊的電腦');
+    const aId=aStore.state.network.deviceId,bId=bStore.state.network.deviceId;
+    bStore.state.tasks.push({id:'for-a',title:'只給洋洋',kind:'daily',targetDeviceId:aId,shared:true,updatedAt:new Date().toISOString()});
+    bStore.state.reminders.push({id:'rem-for-a',title:'提醒洋洋',targetDeviceId:aId,shared:true,updatedAt:new Date().toISOString()});bStore.save();
+    a.setManagement(true);b.setManagement(true);await b.sync();await a.sync();
+    let views=host.managementView(),aView=views.find(x=>x.deviceId===aId),bView=views.find(x=>x.deviceId===bId);
+    assert.equal(aView.tasks.some(x=>x.id==='for-a'),true);assert.equal(aView.reminders.some(x=>x.id==='rem-for-a'),true);
+    assert.equal(bView.tasks.some(x=>x.id==='for-a'),false);assert.equal(bView.reminders.some(x=>x.id==='rem-for-a'),false);
+    hostStore.state.network.managedConfigs[bId].tasks.push({id:'stale-for-a',title:'錯誤快取',kind:'daily',targetDeviceId:aId,updatedAt:new Date().toISOString()});hostStore.save();
+    await b.sync();views=host.managementView();bView=views.find(x=>x.deviceId===bId);
+    assert.equal(bView.tasks.some(x=>x.id==='stale-for-a'),false);
+    assert.equal(hostStore.state.network.managedConfigs[bId].tasks.some(x=>x.id==='stale-for-a'),false);
+  }finally{await a.stop();await b.stop();await host.stop();cleanup(dir);}
+});
+
 test('pairing code expires and repeated failures are rate limited',async()=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-pair-security-')),hostStore=new Store(path.join(dir,'host.json'));
   const host=new FamilyNetwork(hostStore,()=>{},0,'0.7.0');
