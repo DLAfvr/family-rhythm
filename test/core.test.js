@@ -216,6 +216,12 @@ test('task statistics separate completed pending and missed with timestamps',()=
   assert.equal(core.taskStats(state,'2026-10-02',new Date(2026,9,4)).missed.length,1);assert.equal(core.taskStats(state,'2026-10-04',new Date(2026,9,4)).pending.length,1);
 });
 
+test('task statistics include enabled recurring work and reward spending',()=>{
+  const state=core.clone(core.DEFAULT_STATE);state.tasks=[core.normalizeTask({id:'daily',title:'每天閱讀',kind:'daily'}),core.normalizeTask({id:'off',title:'已關閉',kind:'daily',enabled:false})];state.completions=[{id:'done',taskId:'daily',memberId:'me',date:'2026-10-14',round:1,completedAt:'2026-10-14T10:00:00.000Z',rewardMinutes:20}];state.rewardUsage['2026-10-14']={quotaMinutes:5,clockMinutes:3,earlySessions:[{minutes:4}]};
+  const stats=core.taskStats(state,'2026-10-14',new Date(2026,9,14,12));
+  assert.deepEqual(stats.completed.map(x=>x.taskId),['daily']);assert.equal(stats.pending.length,0);assert.equal(stats.earnedMinutes,20);assert.equal(stats.spentRewardMinutes,12);assert.equal(stats.netRewardMinutes,8);assert.deepEqual(stats.spentBreakdown,{quotaMinutes:5,clockMinutes:3,earlyMinutes:4});
+});
+
 test('store keeps only thirty deduplicated snapshots and restores without replacing credentials',()=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-snapshot-test-')),file=path.join(dir,'state.json');try{const store=new Store(file);store.state.network={deviceId:'device',token:'secret'};store.state.settings.parentPassword={salt:'s',hash:'h'};for(let i=0;i<35;i++){store.state.familyName=`家庭${i}`;store.createSnapshot('test',true);}assert.equal(store.listSnapshots().length,30);const target=store.listSnapshots().at(-1);store.state.familyName='現在';store.restoreSnapshot(target.id);assert.equal(store.state.network.token,'secret');assert.equal(store.state.settings.parentPassword.hash,'h');assert.notEqual(store.state.familyName,'現在');}finally{fs.rmSync(dir,{recursive:true,force:true});}
 });

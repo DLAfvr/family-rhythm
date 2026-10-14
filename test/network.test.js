@@ -5,6 +5,7 @@ const fs=require('node:fs');
 const os=require('node:os');
 const path=require('node:path');
 const Store=require('../src/store');
+const core=require('../src/core');
 const {FamilyNetwork}=require('../src/network');
 function cleanup(dir){for(let i=0;i<5;i++){try{return fs.rmSync(dir,{recursive:true,force:true,maxRetries:3,retryDelay:20});}catch(e){if(i===4)throw e;}}}
 
@@ -136,6 +137,18 @@ test('managed client authorizes host settings and reminder control',async()=>{
   }finally{await client.stop();await host.stop();cleanup(dir);}
 });
 
+test('newer managed tombstone wins over an older live copy with the same id',()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-item-tombstone-test-'));
+  try{
+    const store=new Store(path.join(dir,'state.json')),network=new FamilyNetwork(store,()=>{},0);
+    const live={id:'legacy-task',title:'舊責任',kind:'weekly',updatedAt:'2026-10-05T00:00:00.000Z'};
+    const removed={...live,deletedAt:'2026-10-06T00:00:00.000Z',updatedAt:'2026-10-06T00:00:00.000Z'};
+    const merged=network.mergeItems([live],[removed]);
+    assert.equal(merged.length,1);
+    assert.equal(merged[0].deletedAt,removed.deletedAt);
+  }finally{cleanup(dir);}
+});
+
 test('primary manager grants and revokes a co-manager with queued deduplicated actions',async()=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-multi-parent-test-'));
   const hostStore=new Store(path.join(dir,'host.json')),childStore=new Store(path.join(dir,'child.json')),parentStore=new Store(path.join(dir,'parent2.json'));
@@ -213,6 +226,18 @@ test('one-off task with no chosen date reaches the recipient today',async()=>{
 
 test('private items never leave their device and managed summary includes wallet statistics',async()=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-private-test-')),hs=new Store(path.join(dir,'host.json')),cs=new Store(path.join(dir,'client.json')),host=new FamilyNetwork(hs,()=>{},0),client=new FamilyNetwork(cs,()=>{},0);try{const status=await host.createFamily('家','主機');client.port=status.port;await client.join('127.0.0.1',status.pairingCode,'孩子');cs.state.tasks.push({id:'private',title:'秘密備忘',kind:'daily',private:true,enabled:true});cs.state.tasks.push({id:'shared',title:'共享責任',kind:'daily',private:false,enabled:true});cs.state.rewardBalanceMinutes=17;client.setManagement(true);await client.sync();const remote=hs.state.network.remoteItems[cs.state.network.deviceId];assert.equal(remote.tasks.some(x=>x.id==='private'),false);assert.equal(remote.tasks.some(x=>x.id==='shared'),true);assert.equal(host.managementView()[0].rewardBalanceMinutes,17);assert.equal(host.managementView()[0].stats.length,30);}finally{await client.stop();await host.stop();cleanup(dir);}
+});
+
+test('managed statistics include host-assigned tasks, completion rewards and wallet spending',async()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-managed-stats-test-')),hs=new Store(path.join(dir,'host.json')),cs=new Store(path.join(dir,'client.json')),host=new FamilyNetwork(hs,()=>{},0),client=new FamilyNetwork(cs,()=>{},0);
+  try{
+    const status=await host.createFamily('家','主機');client.port=status.port;await client.join('127.0.0.1',status.pairingCode,'孩子');client.setManagement(true);await client.sync();const childId=cs.state.network.deviceId,today=core.localDateKey();
+    hs.state.tasks.push({id:'assigned-daily',title:'每天閱讀',kind:'daily',enabled:true,targetDeviceId:childId,rewardMinutes:20,updatedAt:new Date().toISOString()});hs.save();
+    await client.sync();await client.sync();
+    let stats=host.managementView()[0].stats.find(x=>x.date===today);assert.deepEqual(stats.pending.map(x=>x.taskId),['assigned-daily']);
+    cs.state.completions.push({id:'completion',taskId:'assigned-daily',memberId:'me',date:today,round:1,completedAt:new Date().toISOString(),rewardMinutes:20});cs.state.rewardUsage[today]={quotaMinutes:5,clockMinutes:0,earlySessions:[{minutes:3}]};await client.sync();
+    stats=host.managementView()[0].stats.find(x=>x.date===today);assert.deepEqual(stats.completed.map(x=>x.taskId),['assigned-daily']);assert.equal(stats.earnedMinutes,20);assert.equal(stats.spentRewardMinutes,8);assert.equal(stats.netRewardMinutes,12);
+  }finally{await client.stop();await host.stop();cleanup(dir);}
 });
 
 test('host arbitrates bounty capacity and rejects the next claimant',async()=>{
