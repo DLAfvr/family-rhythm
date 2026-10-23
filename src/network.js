@@ -13,12 +13,38 @@ function id() { return crypto.randomUUID(); }
 function localAddresses() {
   return Object.values(os.networkInterfaces()).flat().filter(x => x?.family === 'IPv4' && !x.internal).map(x => x.address);
 }
-function body(req) {
+function readJson(stream, maxBytes = 10_000_000) {
   return new Promise((resolve, reject) => {
-    let text = '';
-    req.on('data', chunk => { text += chunk; if (text.length > 10_000_000) req.destroy(); });
-    req.on('end', () => { try { resolve(text ? JSON.parse(text) : {}); } catch (e) { reject(e); } });
-    req.on('error', reject);
+    const chunks = []; let bytes = 0, settled = false;
+    stream.on('data', chunk => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bytes += buffer.length;
+      if (bytes > maxBytes) {
+        settled = true;
+        stream.destroy(new Error('資料大小超過限制'));
+        return;
+      }
+      chunks.push(buffer);
+    });
+    stream.on('end', () => {
+      if (settled) return;
+      try { const text = Buffer.concat(chunks, bytes).toString('utf8'); resolve(text ? JSON.parse(text) : {}); }
+      catch (e) { reject(e); }
+    });
+    stream.on('error', reject);
+  });
+}
+function body(req) { return readJson(req); }
+function hasBrokenText(value) { return typeof value === 'string' && value.includes('\uFFFD'); }
+function sanitizeIncomingItems(items = [], references = []) {
+  const clean = new Map(references.filter(x => x?.id && !Object.values(x).some(hasBrokenText)).map(x => [x.id, x]));
+  return items.flatMap(item => {
+    if (!item || !Object.values(item).some(hasBrokenText)) return [item];
+    const reference = clean.get(item.id);
+    if (!reference) return [];
+    const repaired = { ...item };
+    for (const [key, value] of Object.entries(repaired)) if (hasBrokenText(value) && typeof reference[key] === 'string' && !hasBrokenText(reference[key])) repaired[key] = reference[key];
+    return [repaired];
   });
 }
 function json(res, status, value) {
@@ -30,7 +56,7 @@ function request(host, path, value, headers = {}, port = PORT) {
   return new Promise((resolve, reject) => {
     const text = JSON.stringify(value || {});
     const req = http.request({ host, port, path, method:'POST', timeout:5000, headers:{ 'content-type':'application/json', 'content-length':Buffer.byteLength(text), ...headers } }, res => {
-      let out=''; res.on('data',c=>out+=c); res.on('end',()=>{ try { const parsed=out?JSON.parse(out):{}; res.statusCode>=400?reject(new Error(parsed.error||`HTTP ${res.statusCode}`)):resolve(parsed); } catch(e){reject(e);} });
+      readJson(res).then(parsed=>res.statusCode>=400?reject(new Error(parsed.error||`HTTP ${res.statusCode}`)):resolve(parsed),reject);
     });
     req.on('timeout',()=>req.destroy(new Error('連線逾時'))); req.on('error',reject); req.end(text);
   });
@@ -73,10 +99,11 @@ class FamilyNetwork {
           const ackedActionIds=this.applyManagerActions(peer,data.managerActions||[]);
           const ackedSecurityEventIds=this.applySecurityEvents(peer,data.securityEvents||[]);
           this.store.state.soundAssets||={};for(const [assetId,asset] of Object.entries(data.assets||{}))if(asset?.data&&asset.data.length<7_500_000)this.store.state.soundAssets[assetId]=asset;
-          n.remoteItems[data.deviceId]={reminders:(data.reminders||[]).filter(x=>!x.private),tasks:(data.tasks||[]).filter(x=>!x.private),completions:data.completions||[],settings:managedSettings(data.settings),usage:data.usage||{},rewardBalanceMinutes:Math.max(0,Number(data.rewardBalanceMinutes)||0),rewardUsage:data.rewardUsage||{},stats:data.stats||[],remainingMinutes:Number(data.remainingMinutes),lastAppliedResetId:data.lastAppliedResetId||null,parentLockConfigured:Boolean(data.parentLockConfigured),lastAppliedParentLockRequestId:data.lastAppliedParentLockRequestId||null,receivedAt:new Date().toISOString()};
-          const ownReminders=(data.reminders||[]).filter(x=>itemAppliesToDevice(x,data.deviceId)),ownTasks=(data.tasks||[]).filter(x=>itemAppliesToDevice(x,data.deviceId));
+          const existingConfig=n.managedConfigs[data.deviceId]||{},incomingReminders=sanitizeIncomingItems((data.reminders||[]).filter(x=>!x.private),[...(this.store.state.reminders||[]),...(existingConfig.reminders||[])]),incomingTasks=sanitizeIncomingItems((data.tasks||[]).filter(x=>!x.private),[...(this.store.state.tasks||[]),...(existingConfig.tasks||[])]);
+          n.remoteItems[data.deviceId]={reminders:incomingReminders,tasks:incomingTasks,completions:data.completions||[],settings:managedSettings(data.settings),usage:data.usage||{},rewardBalanceMinutes:Math.max(0,Number(data.rewardBalanceMinutes)||0),rewardUsage:data.rewardUsage||{},stats:data.stats||[],remainingMinutes:Number(data.remainingMinutes),lastAppliedResetId:data.lastAppliedResetId||null,parentLockConfigured:Boolean(data.parentLockConfigured),lastAppliedParentLockRequestId:data.lastAppliedParentLockRequestId||null,receivedAt:new Date().toISOString()};
+          const ownReminders=incomingReminders.filter(x=>itemAppliesToDevice(x,data.deviceId)),ownTasks=incomingTasks.filter(x=>itemAppliesToDevice(x,data.deviceId));
           if(peer.managementEnabled&&!n.managedConfigs[data.deviceId])n.managedConfigs[data.deviceId]={version:1,settings:managedSettings(data.settings),reminders:ownReminders,tasks:ownTasks,updatedAt:new Date().toISOString()};
-          else if(peer.managementEnabled){const cfg=n.managedConfigs[data.deviceId];cfg.reminders=this.mergeItems((cfg.reminders||[]).filter(x=>itemAppliesToDevice(x,data.deviceId)),ownReminders);cfg.tasks=this.mergeItems((cfg.tasks||[]).filter(x=>itemAppliesToDevice(x,data.deviceId)),ownTasks);}
+          else if(peer.managementEnabled){const cfg=n.managedConfigs[data.deviceId];cfg.reminders=sanitizeIncomingItems(this.mergeItems((cfg.reminders||[]).filter(x=>itemAppliesToDevice(x,data.deviceId)),ownReminders),this.store.state.reminders||[]);cfg.tasks=sanitizeIncomingItems(this.mergeItems((cfg.tasks||[]).filter(x=>itemAppliesToDevice(x,data.deviceId)),ownTasks),this.store.state.tasks||[]);}
           const hostPublicTasks=this.store.state.tasks.filter(x=>!x.private),hostItems={reminders:this.applyItemOverrides(this.store.state.reminders.filter(x=>!x.private)),tasks:hostPublicTasks,completions:this.store.state.completions.filter(c=>hostPublicTasks.some(t=>t.id===c.taskId))};
           const remoteForSync=Object.fromEntries(Object.entries(n.remoteItems).map(([source,items])=>[source,{...items,reminders:this.applyItemOverrides(items.reminders||[])}]));
           const managedBase=peer.managementEnabled?n.managedConfigs[data.deviceId]||null:null,managedConfig=managedBase?{...managedBase,reminders:this.applyItemOverrides(managedBase.reminders||[]).filter(x=>itemAppliesToDevice(x,data.deviceId)),tasks:(managedBase.tasks||[]).filter(x=>itemAppliesToDevice(x,data.deviceId))}:null,allReminders=[...hostItems.reminders,...Object.values(remoteForSync).flatMap(x=>x.reminders||[]),...(managedConfig?.reminders||[])],neededIds=new Set(allReminders.filter(x=>!x.targetDeviceId||x.targetDeviceId===data.deviceId).map(x=>x.customSoundId).filter(Boolean)),have=new Set(data.haveAssetIds||[]),assets=Object.fromEntries([...neededIds].filter(assetId=>!have.has(assetId)&&this.store.state.soundAssets[assetId]).map(assetId=>[assetId,this.store.state.soundAssets[assetId]]));
@@ -150,7 +177,7 @@ class FamilyNetwork {
   async claimBounty(taskId){const n=this.ensure();if(n.role==='host'){const task=this.store.state.tasks.find(x=>x.id===taskId);if(!task)throw new Error('找不到懸賞');const claims=n.bountyClaims[taskId]||[];if(claims.some(x=>x.deviceId===n.deviceId))return{ok:true,duplicate:true,claim:claims.find(x=>x.deviceId===n.deviceId)};if(claims.length>=Math.max(1,Number(task.maxCompletions)||1))throw new Error('懸賞已被領完');const claim={id:id(),taskId,deviceId:n.deviceId,deviceName:n.deviceName,claimedAt:new Date().toISOString(),rewardMinutes:Math.max(0,Number(task.rewardMinutes)||0),round:Math.max(1,Number(task.round)||1)};claims.push(claim);n.bountyClaims[taskId]=claims;this.store.save();return{ok:true,claim};}if(n.role!=='client'||!n.online)throw new Error('懸賞需要連線到主要電腦才能完成');return request(n.hostIp,'/bounty-claim',{deviceId:n.deviceId,taskId},{'x-family-token':n.token},this.port);}
   setManagement(enabled){const n=this.ensure();if(n.role!=='client')throw new Error('只有加入家庭的裝置能開啟受管理模式');n.managementEnabled=Boolean(enabled);this.store.save();this.sync().catch(()=>{});this.onChange();return this.status();}
   renameFamily(name){const n=this.ensure(),value=String(name||'').trim();if(n.role!=='host')throw new Error('只有主要電腦能修改家庭名稱');if(!value)throw new Error('家庭名稱不能空白');if(value.length>40)throw new Error('家庭名稱最多 40 個字');n.familyName=value;this.store.save();this.onChange();return this.status();}
-  managementView(){const n=this.ensure();if(n.role==='client'&&n.memberRole==='co-manager')return n.managerDevices||[];if(n.role!=='host')return[];return Object.values(n.peers).filter(p=>p.managementEnabled).map(p=>{const observed=n.remoteItems[p.deviceId]||{},config=n.managedConfigs[p.deviceId]||{},reminders=this.applyItemOverrides(this.mergeItems(config.reminders,observed.reminders,this.assignedItems(p.deviceId,'reminders'))).filter(x=>!x.deletedAt&&itemAppliesToDevice(x,p.deviceId)),tasks=this.mergeItems(config.tasks,observed.tasks,this.assignedItems(p.deviceId,'tasks')).filter(x=>!x.deletedAt&&itemAppliesToDevice(x,p.deviceId)),stats=Array.from({length:30},(_,i)=>{const d=new Date();d.setDate(d.getDate()-i);return core.taskStats({tasks,completions:observed.completions||[],rewardUsage:observed.rewardUsage||{}},d);});return{deviceId:p.deviceId,name:p.name,online:Date.now()-new Date(p.lastSeen).getTime()<30000,lastSeen:p.lastSeen,receivedAt:observed.receivedAt,settings:config.settings||observed.settings||{},reminders,tasks,usage:observed.usage||{},rewardBalanceMinutes:observed.rewardBalanceMinutes||0,rewardUsage:observed.rewardUsage||{},remainingMinutes:Number.isFinite(observed.remainingMinutes)?observed.remainingMinutes:null,stats,parentLockConfigured:Boolean(observed.parentLockConfigured),lockRequestPending:Boolean(config.parentLockRequest?.id&&config.parentLockRequest.id!==observed.lastAppliedParentLockRequestId),version:config.version||0,updatedAt:config.updatedAt,resetPending:Boolean(config.resetUsageRequest?.id&&config.resetUsageRequest.id!==observed.lastAppliedResetId),lastResetRequestedAt:config.resetUsageRequest?.requestedAt};});}
+  managementView(){const n=this.ensure();if(n.role==='client'&&n.memberRole==='co-manager')return n.managerDevices||[];if(n.role!=='host')return[];return Object.values(n.peers).filter(p=>p.managementEnabled).map(p=>{const observed=n.remoteItems[p.deviceId]||{},config=n.managedConfigs[p.deviceId]||{},reminders=this.applyItemOverrides(sanitizeIncomingItems(this.mergeItems(config.reminders,observed.reminders,this.assignedItems(p.deviceId,'reminders')),this.store.state.reminders||[])).filter(x=>!x.deletedAt&&itemAppliesToDevice(x,p.deviceId)),tasks=sanitizeIncomingItems(this.mergeItems(config.tasks,observed.tasks,this.assignedItems(p.deviceId,'tasks')),this.store.state.tasks||[]).filter(x=>!x.deletedAt&&itemAppliesToDevice(x,p.deviceId)),stats=Array.from({length:30},(_,i)=>{const d=new Date();d.setDate(d.getDate()-i);return core.taskStats({tasks,completions:observed.completions||[],rewardUsage:observed.rewardUsage||{}},d);});return{deviceId:p.deviceId,name:p.name,online:Date.now()-new Date(p.lastSeen).getTime()<30000,lastSeen:p.lastSeen,receivedAt:observed.receivedAt,settings:config.settings||observed.settings||{},reminders,tasks,usage:observed.usage||{},rewardBalanceMinutes:observed.rewardBalanceMinutes||0,rewardUsage:observed.rewardUsage||{},remainingMinutes:Number.isFinite(observed.remainingMinutes)?observed.remainingMinutes:null,stats,parentLockConfigured:Boolean(observed.parentLockConfigured),lockRequestPending:Boolean(config.parentLockRequest?.id&&config.parentLockRequest.id!==observed.lastAppliedParentLockRequestId),version:config.version||0,updatedAt:config.updatedAt,resetPending:Boolean(config.resetUsageRequest?.id&&config.resetUsageRequest.id!==observed.lastAppliedResetId),lastResetRequestedAt:config.resetUsageRequest?.requestedAt};});}
   queueManagerAction(action){const n=this.ensure();if(n.role!=='client'||n.memberRole!=='co-manager')throw new Error('這台裝置不是共同管理者');const queued={id:id(),createdAt:new Date().toISOString(),actorDeviceId:n.deviceId,actorName:n.deviceName,...action};n.pendingManagerActions.push(queued);this.store.save();this.sync().catch(()=>{});this.onChange();return queued;}
   applyManagedSettings(deviceId,patch,actor){const n=this.ensure(),peer=n.peers[deviceId];if(n.role!=='host'||!peer?.managementEnabled)throw new Error('這台裝置未授權管理');const current=n.managedConfigs[deviceId]||{version:0,settings:{},reminders:[],tasks:[]};current.settings={...current.settings,...managedSettings(patch)};current.version=(current.version||0)+1;current.updatedAt=new Date().toISOString();n.managedConfigs[deviceId]=current;this.recordAudit(actor,'settings-updated',deviceId,{keys:Object.keys(managedSettings(patch))});return current;}
   updateManagedSettings(deviceId,patch){const n=this.ensure();if(n.role==='client')return this.queueManagerAction({type:'settings',deviceId,patch:managedSettings(patch)});const out=this.applyManagedSettings(deviceId,patch,null);this.store.save();this.onChange();return out;}
@@ -166,4 +193,4 @@ class FamilyNetwork {
   async stop(){clearInterval(this.timer);this.timer=null;this.running=false;if(this.server){await new Promise(r=>this.server.close(r));this.server=null;}}
   async resume(){const n=this.ensure();if(n.role==='host')await this.startHost();else if(n.role==='client')this.startClient();}
 }
-module.exports={FamilyNetwork,PORT,localAddresses,managedSettings};
+module.exports={FamilyNetwork,PORT,localAddresses,managedSettings,readJson,sanitizeIncomingItems};

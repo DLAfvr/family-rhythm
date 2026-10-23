@@ -4,10 +4,35 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const os=require('node:os');
 const path=require('node:path');
+const {Readable}=require('node:stream');
 const Store=require('../src/store');
 const core=require('../src/core');
-const {FamilyNetwork}=require('../src/network');
+const {FamilyNetwork,readJson,sanitizeIncomingItems}=require('../src/network');
 function cleanup(dir){for(let i=0;i<5;i++){try{return fs.rmSync(dir,{recursive:true,force:true,maxRetries:3,retryDelay:20});}catch(e){if(i===4)throw e;}}}
+
+test('UTF-8 JSON stays intact when a Chinese character is split across network chunks',async()=>{
+  const expected={title:'一週都沒被老師告狀',message:'記得換垃圾袋'};
+  const bytes=Buffer.from(JSON.stringify(expected),'utf8');
+  const parsed=await readJson(Readable.from([...bytes].map(byte=>Buffer.from([byte]))));
+  assert.deepEqual(parsed,expected);
+});
+
+test('corrupt synchronized text is repaired from a clean authoritative item or quarantined',()=>{
+  const references=[{id:'known',title:'換垃圾袋',kind:'daily'}];
+  const incoming=[{id:'known',title:'換垃���袋',kind:'daily',updatedAt:'2026-10-22T00:00:00.000Z'},{id:'unknown',title:'未���項目'}];
+  assert.deepEqual(sanitizeIncomingItems(incoming,references),[{id:'known',title:'換垃圾袋',kind:'daily',updatedAt:'2026-10-22T00:00:00.000Z'}]);
+});
+
+test('managed view immediately hides corrupt cached copies and uses the host original',()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-garbled-view-test-')),store=new Store(path.join(dir,'state.json')),network=new FamilyNetwork(store,()=>{},0);
+  try{
+    const childId='child';
+    Object.assign(network.ensure(),{role:'host',deviceId:'host',peers:{[childId]:{deviceId:childId,name:'孩子',managementEnabled:true,lastSeen:new Date().toISOString()}},managedConfigs:{[childId]:{tasks:[{id:'known',title:'換垃���袋',kind:'daily',targetDeviceId:childId,updatedAt:'2026-10-22T00:00:00.000Z'},{id:'unknown',title:'壞���副本',kind:'daily',targetDeviceId:childId}]}}});
+    store.state.tasks=[{id:'known',title:'換垃圾袋',kind:'daily',targetDeviceId:childId}];
+    const tasks=network.managementView()[0].tasks;
+    assert.deepEqual(tasks.map(x=>x.title),['換垃圾袋']);
+  }finally{cleanup(dir);}
+});
 
 test('two local devices can pair and synchronize a shared reminder',async()=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-network-test-'));
