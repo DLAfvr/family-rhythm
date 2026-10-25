@@ -151,6 +151,32 @@ test('store restores a corrupt primary from the last known-good backup', () => {
   } finally { fs.rmSync(dir,{recursive:true,force:true,maxRetries:5,retryDelay:50}); }
 });
 
+test('store loads the backup when the primary disappears', () => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-store-missing-')),file=path.join(dir,'state.json');
+  try {
+    const store=new Store(file);store.state.familyName='第一份';store.save();store.state.familyName='第二份';store.save();
+    fs.unlinkSync(file);
+    const recovered=new Store(file);
+    assert.equal(recovered.state.familyName,'第一份');
+    assert.equal(recovered.recoveredFromBackup,true);
+  } finally {fs.rmSync(dir,{recursive:true,force:true,maxRetries:5,retryDelay:50});}
+});
+
+test('store never rewrites the primary in place when replacement fails', () => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-store-rename-')),file=path.join(dir,'state.json');
+  const originalRename=fs.renameSync;
+  try {
+    const store=new Store(file);store.state.familyName='安全的舊資料';store.save();
+    store.state.familyName='尚未寫入的新資料';
+    fs.renameSync=(from,to)=>{if(to===file)throw new Error('locked');return originalRename(from,to);};
+    assert.throws(()=>store.save(),/無法安全替換/);
+    fs.renameSync=originalRename;
+    assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).familyName,'安全的舊資料');
+    const temp=fs.readdirSync(dir).find(name=>name.endsWith('.tmp')&&name.startsWith('state.json.'));
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dir,temp),'utf8')).familyName,'尚未寫入的新資料');
+  } finally {fs.renameSync=originalRename;fs.rmSync(dir,{recursive:true,force:true,maxRetries:5,retryDelay:50});}
+});
+
 test('store does not silently reset an unreadable primary without a backup', () => {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'family-store-no-backup-')),file=path.join(dir,'state.json');
   try { fs.writeFileSync(file,'not json');assert.throws(()=>new Store(file),/找不到可用備援/); }

@@ -16,7 +16,11 @@ class Store {
     return { ...defaults, ...loaded, settings:{...defaults.settings,...(loaded.settings||{})} };
   }
   load() {
-    if(!fs.existsSync(this.file))return clone(DEFAULT_STATE);
+    if(!fs.existsSync(this.file)){
+      if(!fs.existsSync(this.backupFile))return clone(DEFAULT_STATE);
+      try {this.recoveredFromBackup=true;return this.withDefaults(this.parse(this.backupFile));}
+      catch {throw new Error('家庭節奏主資料檔遺失，且找不到可用備援');}
+    }
     try { return this.withDefaults(this.parse(this.file)); }
     catch(primaryError) {
       try {
@@ -32,25 +36,30 @@ class Store {
   }
   save() {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    if(fs.existsSync(this.file)){
-      try {
-        this.parse(this.file);
-        const backupTemp=`${this.backupFile}.${process.pid}.tmp`;
-        fs.copyFileSync(this.file,backupTemp);
-        try { fs.renameSync(backupTemp,this.backupFile); }
-        catch { fs.copyFileSync(backupTemp,this.backupFile); try { fs.unlinkSync(backupTemp); } catch { /* already moved */ } }
-      } catch { /* never replace a known-good backup with a corrupt primary */ }
-    }
     const temp = `${this.file}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify(this.state, null, 2));
+    const handle=fs.openSync(temp,'wx');
+    try {fs.writeFileSync(handle,JSON.stringify(this.state,null,2));fs.fsyncSync(handle);}
+    finally {fs.closeSync(handle);}
+    this.parse(temp);
+    if(fs.existsSync(this.file)){
+      let primaryValid=false;
+      try {this.parse(this.file);primaryValid=true;} catch { /* keep the last good backup */ }
+      if(primaryValid){
+        const backupTemp=`${this.backupFile}.${process.pid}.${Date.now()}.tmp`;
+        fs.copyFileSync(this.file,backupTemp);
+        const backupHandle=fs.openSync(backupTemp,'r+');
+        try {fs.fsyncSync(backupHandle);} finally {fs.closeSync(backupHandle);}
+        this.parse(backupTemp);
+        // If the backup cannot be updated, keep the current primary too.
+        fs.renameSync(backupTemp,this.backupFile);
+      }
+    }
     try {
       fs.renameSync(temp, this.file);
     } catch (error) {
-      // Windows may refuse replacing a destination that another older instance
-      // briefly has open. Preserve the valid data with a direct rewrite, then
-      // remove only this process's uniquely named temporary file.
-      fs.writeFileSync(this.file, JSON.stringify(this.state, null, 2));
-      try { fs.unlinkSync(temp); } catch { /* already moved or cleaned */ }
+      // A locked destination must not trigger an in-place rewrite: leave the
+      // previous data and the complete temporary file available for recovery.
+      throw new Error(`無法安全替換家庭節奏資料檔；新資料保留於 ${temp}：${error.message}`);
     }
     this.recoveredFromBackup=false;
   }
